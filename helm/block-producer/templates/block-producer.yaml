@@ -169,7 +169,7 @@ spec:
         resources:
           limits:
           requests:
-            memory: 8.0Gi
+            memory: 12.0Gi
             cpu: 8.0
         image: {{ $.Values.coda.image }}
         {{ if $.Values.coda.useCustomEntrypoint -}}
