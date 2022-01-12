@@ -49,17 +49,21 @@ let gen_predicate_from ?(succeed = true) ~account_id ~ledger () =
             let open Snapp_basic in
             let%bind (predicate_account : Snapp_predicate.Account.t) =
               let%bind balance =
-                let%bind delta_int = Int.gen_uniform_incl 1 10_000_000 in
-                let delta = Currency.Amount.of_int delta_int in
+                let%bind balance_change_int =
+                  Int.gen_uniform_incl 1 10_000_000
+                in
+                let balance_change =
+                  Currency.Amount.of_int balance_change_int
+                in
                 let lower =
-                  match Currency.Balance.sub_amount balance delta with
+                  match Currency.Balance.sub_amount balance balance_change with
                   | None ->
                       Currency.Balance.zero
                   | Some bal ->
                       bal
                 in
                 let upper =
-                  match Currency.Balance.add_amount balance delta with
+                  match Currency.Balance.add_amount balance balance_change with
                   | None ->
                       Currency.Balance.max_int
                   | Some bal ->
@@ -69,10 +73,10 @@ let gen_predicate_from ?(succeed = true) ~account_id ~ledger () =
                   (return { Snapp_predicate.Closed_interval.lower; upper })
               in
               let%bind nonce =
-                let%bind delta_int = Int.gen_uniform_incl 1 100 in
-                let delta = Account.Nonce.of_int delta_int in
+                let%bind balance_change_int = Int.gen_uniform_incl 1 100 in
+                let balance_change = Account.Nonce.of_int balance_change_int in
                 let lower =
-                  match Account.Nonce.sub nonce delta with
+                  match Account.Nonce.sub nonce balance_change with
                   | None ->
                       Account.Nonce.zero
                   | Some nonce ->
@@ -80,7 +84,7 @@ let gen_predicate_from ?(succeed = true) ~account_id ~ledger () =
                 in
                 let upper =
                   (* Nonce.add doesn't check for overflow, so check here *)
-                  match Account.Nonce.(sub max_value) delta with
+                  match Account.Nonce.(sub max_value) balance_change with
                   | None ->
                       (* unreachable *)
                       failwith
@@ -89,7 +93,7 @@ let gen_predicate_from ?(succeed = true) ~account_id ~ledger () =
                   | Some n ->
                       if Account.Nonce.( < ) n nonce then
                         Account.Nonce.max_value
-                      else Account.Nonce.add nonce delta
+                      else Account.Nonce.add nonce balance_change
                 in
                 Or_ignore.gen
                   (return { Snapp_predicate.Closed_interval.lower; upper })
@@ -242,7 +246,7 @@ let gen_fee (account : Account.t) =
 
 let fee_to_amt fee = Currency.Amount.(Signed.of_unsigned (of_fee fee))
 
-let gen_delta ?balances_tbl (account : Account.t) =
+let gen_balance_change ?balances_tbl (account : Account.t) =
   let pk = account.public_key in
   let open Quickcheck.Let_syntax in
   match%bind Quickcheck.Generator.of_list [ Sgn.Pos; Neg ] with
@@ -277,14 +281,117 @@ let gen_delta ?balances_tbl (account : Account.t) =
       in
       Currency.Signed_poly.{ magnitude; sgn = Sgn.Neg }
 
-(* the type a is associated with the delta field, which is an unsigned fee for the fee payer,
-   and a signed amount for other parties
+let gen_use_full_commitment : bool Base_quickcheck.Generator.t =
+  Bool.quickcheck_generator
+
+let closed_interval_exact value =
+  Snapp_predicate.Closed_interval.{ lower = value; upper = value }
+
+let gen_epoch_data_predicate
+    (epoch_data :
+      ( ( Frozen_ledger_hash.Stable.V1.t
+        , Currency.Amount.Stable.V1.t )
+        Epoch_ledger.Poly.Stable.V1.t
+      , Epoch_seed.Stable.V1.t
+      , State_hash.Stable.V1.t
+      , State_hash.Stable.V1.t
+      , Mina_numbers.Length.Stable.V1.t )
+      Snapp_predicate.Protocol_state.Epoch_data.Poly.t) :
+    Snapp_predicate.Protocol_state.Epoch_data.t Base_quickcheck.Generator.t =
+  let open Quickcheck.Let_syntax in
+  let%bind ledger =
+    let%bind hash =
+      Snapp_basic.Or_ignore.gen @@ return epoch_data.ledger.hash
+    in
+    let%map total_currency =
+      closed_interval_exact epoch_data.ledger.total_currency
+      |> return |> Snapp_basic.Or_ignore.gen
+    in
+    Epoch_ledger.Poly.{ hash; total_currency }
+  in
+  let%bind seed = Snapp_basic.Or_ignore.gen @@ return epoch_data.seed in
+  let%bind start_checkpoint =
+    Snapp_basic.Or_ignore.gen @@ return epoch_data.start_checkpoint
+  in
+  let%bind lock_checkpoint =
+    Snapp_basic.Or_ignore.gen @@ return epoch_data.lock_checkpoint
+  in
+  let%map epoch_length =
+    Snapp_basic.Or_ignore.gen @@ return
+    @@ closed_interval_exact epoch_data.epoch_length
+  in
+  { Epoch_data.Poly.ledger
+  ; seed
+  ; start_checkpoint
+  ; lock_checkpoint
+  ; epoch_length
+  }
+
+let gen_protocol_state_predicate (psv : Snapp_predicate.Protocol_state.View.t) :
+    Snapp_predicate.Protocol_state.t Base_quickcheck.Generator.t =
+  let open Quickcheck.Let_syntax in
+  let%bind snarked_ledger_hash =
+    Snapp_basic.Or_ignore.gen @@ return psv.snarked_ledger_hash
+  in
+  let%bind snarked_next_available_token =
+    Snapp_basic.Or_ignore.gen
+      (return @@ closed_interval_exact psv.snarked_next_available_token)
+  in
+  let%bind timestamp =
+    Snapp_predicate.Closed_interval.
+      { lower = psv.timestamp; upper = Block_time.max_value }
+    |> return |> Snapp_basic.Or_ignore.gen
+  in
+  let%bind blockchain_length =
+    Snapp_basic.Or_ignore.gen
+      (return @@ closed_interval_exact psv.blockchain_length)
+  in
+  let%bind min_window_density =
+    Snapp_basic.Or_ignore.gen
+      (return @@ closed_interval_exact psv.min_window_density)
+  in
+  let%bind total_currency =
+    Snapp_basic.Or_ignore.gen
+      (return @@ closed_interval_exact psv.total_currency)
+  in
+  let%bind global_slot_since_hard_fork =
+    Snapp_basic.Or_ignore.gen
+      (return @@ closed_interval_exact psv.global_slot_since_hard_fork)
+  in
+  let%bind global_slot_since_genesis =
+    Snapp_basic.Or_ignore.gen
+      (return @@ closed_interval_exact psv.global_slot_since_genesis)
+  in
+  let%bind staking_epoch_data =
+    gen_epoch_data_predicate psv.staking_epoch_data
+  in
+  let%map next_epoch_data = gen_epoch_data_predicate psv.next_epoch_data in
+  { Snapp_predicate.Protocol_state.Poly.snarked_ledger_hash
+  ; snarked_next_available_token
+  ; timestamp
+  ; blockchain_length
+  ; min_window_density
+  ; last_vrf_output = ()
+  ; total_currency
+  ; global_slot_since_hard_fork
+  ; global_slot_since_genesis
+  ; staking_epoch_data
+  ; next_epoch_data
+  }
+
+(* The type `a` is associated with the `delta` field, which is an unsigned fee
+   for the fee payer, and a signed amount for other parties.
+   The type `b` is associated with the `use_full_commitment` field, which is
+   `unit` for the fee payer, and `bool` for other parties.
 *)
 let gen_party_body (type a b) ?account_id ?balances_tbl ?(new_account = false)
     ?(snapp_account = false) ?(is_fee_payer = false) ?available_public_keys
-    ~(gen_delta : Account.t -> a Quickcheck.Generator.t)
-    ~(f_delta : a -> Currency.Amount.Signed.t) ~(increment_nonce : b) ~ledger ()
-    : (_, _, _, a, _, _, _, b) Party.Body.Poly.t Quickcheck.Generator.t =
+    ?protocol_state_view
+    ~(gen_balance_change : Account.t -> a Quickcheck.Generator.t)
+    ~(gen_use_full_commitment : b Quickcheck.Generator.t)
+    ~(f_balance_change : a -> Currency.Amount.Signed.t) ~(increment_nonce : b)
+    ~ledger () :
+    (_, _, _, a, _, _, _, b, _) Party.Body.Poly.t Quickcheck.Generator.t =
   let open Quickcheck.Let_syntax in
   (* ledger may contain non-Snapp accounts, so if we want a Snapp account,
      must generate a new one
@@ -394,36 +501,41 @@ let gen_party_body (type a b) ?account_id ?balances_tbl ?(new_account = false)
   in
   let pk = account.public_key in
   let token_id = account.token_id in
-  let%bind delta = gen_delta account in
-  (* update balances table, if provided, with generated delta *)
+  let%bind balance_change = gen_balance_change account in
+  (* update balances table, if provided, with generated balance_change *)
   ( match balances_tbl with
   | None ->
       ()
   | Some tbl ->
-      let add_balance_and_delta balance
-          (delta : (Currency.Amount.t, Sgn.t) Currency.Signed_poly.t) =
-        match delta.sgn with
+      let add_balance_and_balance_change balance
+          (balance_change : (Currency.Amount.t, Sgn.t) Currency.Signed_poly.t) =
+        match balance_change.sgn with
         | Pos -> (
-            match Currency.Balance.add_amount balance delta.magnitude with
+            match
+              Currency.Balance.add_amount balance balance_change.magnitude
+            with
             | Some bal ->
                 bal
             | None ->
-                failwith "add_balance_and_delta: overflow for sum" )
+                failwith "add_balance_and_balance_change: overflow for sum" )
         | Neg -> (
-            match Currency.Balance.sub_amount balance delta.magnitude with
+            match
+              Currency.Balance.sub_amount balance balance_change.magnitude
+            with
             | Some bal ->
                 bal
             | None ->
-                failwith "add_balance_and_delta: underflow for difference" )
+                failwith
+                  "add_balance_and_balance_change: underflow for difference" )
       in
-      let delta = f_delta delta in
+      let balance_change = f_balance_change balance_change in
       Signature_lib.Public_key.Compressed.Table.change tbl pk ~f:(function
         | None ->
             (* new entry in table *)
-            Some (add_balance_and_delta account.balance delta)
+            Some (add_balance_and_balance_change account.balance balance_change)
         | Some balance ->
             (* update entry in table *)
-            Some (add_balance_and_delta balance delta)) ) ;
+            Some (add_balance_and_balance_change balance balance_change)) ) ;
   let field_array_list_gen ~max_array_len ~max_list_len =
     let array_gen =
       let%bind array_len = Int.gen_uniform_incl 0 max_array_len in
@@ -441,28 +553,36 @@ let gen_party_body (type a b) ?account_id ?balances_tbl ?(new_account = false)
   let%bind sequence_events =
     field_array_list_gen ~max_array_len:4 ~max_list_len:6
   in
-  let%map call_data = Snark_params.Tick.Field.gen in
+  let%bind call_data = Snark_params.Tick.Field.gen in
   (* update the depth when generating `other_parties` in Parties.t *)
-  let depth = 0 in
+  let call_depth = 0 in
+  let%bind protocol_state =
+    Option.value_map protocol_state_view ~f:gen_protocol_state_predicate
+      ~default:(return Snapp_predicate.Protocol_state.accept)
+  in
+  let%map use_full_commitment = gen_use_full_commitment in
   { Party.Body.Poly.pk
   ; update
   ; token_id
-  ; delta
+  ; balance_change
   ; increment_nonce
   ; events
   ; sequence_events
   ; call_data
-  ; depth
+  ; call_depth
+  ; protocol_state
+  ; use_full_commitment
   }
 
 let gen_predicated_from ?(succeed = true) ?(new_account = false)
     ?(snapp_account = false) ?(increment_nonce = false) ?available_public_keys
-    ~ledger ~balances_tbl () =
+    ~ledger ~balances_tbl ?protocol_state_view () =
   let open Quickcheck.Let_syntax in
   let%bind body =
     gen_party_body ~new_account ~snapp_account ~increment_nonce
       ?available_public_keys ~ledger ~balances_tbl
-      ~gen_delta:(gen_delta ~balances_tbl) ~f_delta:Fn.id ()
+      ~gen_balance_change:(gen_balance_change ~balances_tbl)
+      ~f_balance_change:Fn.id () ~gen_use_full_commitment ?protocol_state_view
   in
   let account_id =
     Account_id.create body.Party.Body.Poly.pk body.Party.Body.Poly.token_id
@@ -498,46 +618,44 @@ let gen_party_from ?(succeed = true) ?(new_account = false)
   in
   { Party.data; authorization }
 
-(* takes an optional account id, if we want to sign this data *)
-let gen_party_predicated_signed ?account_id ~ledger :
-    Party.Predicated.Signed.t Quickcheck.Generator.t =
-  let open Quickcheck.Let_syntax in
-  let%bind body =
-    gen_party_body ~gen_delta ~f_delta:Fn.id
-      ~increment_nonce:(Option.is_some account_id)
-      ?account_id ~ledger ()
-  in
-  let%map predicate = Account.Nonce.gen in
-  Party.Predicated.Poly.{ body; predicate }
-
 (* takes an account id, if we want to sign this data *)
-let gen_party_predicated_fee_payer ~account_id ~ledger :
+let gen_party_predicated_fee_payer ~account_id ~ledger ?protocol_state_view () :
     Party.Predicated.Fee_payer.t Quickcheck.Generator.t =
   let open Quickcheck.Let_syntax in
   let%map body0 =
     gen_party_body ~account_id ~is_fee_payer:true ~increment_nonce:()
-      ~gen_delta:gen_fee ~f_delta:fee_to_amt ~ledger ()
+      ~gen_balance_change:gen_fee ~f_balance_change:fee_to_amt
+      ~gen_use_full_commitment:(return ()) ~ledger ?protocol_state_view ()
   in
   (* make sure the fee payer's token id is the default,
      which is represented by the unit value in the body
   *)
   assert (Token_id.equal body0.token_id Token_id.default) ;
   let body = { body0 with token_id = () } in
-  let predicate = Account.Nonce.zero in
+  (* use nonce from account in ledger *)
+  let pk = body.pk in
+  let account_id = Account_id.create pk Token_id.default in
+  let account =
+    match Ledger.location_of_account ledger account_id with
+    | None ->
+        failwith
+          "gen_party_predicated_fee_payer: expected account to be in ledger"
+    | Some loc -> (
+        match Ledger.get ledger loc with
+        | None ->
+            failwith "gen_party_predicated_fee_payer: no account at location"
+        | Some account ->
+            account )
+  in
+  let predicate = account.nonce in
   Party.Predicated.Poly.{ body; predicate }
 
-let gen_party_signed ?account_id ~ledger : Party.Signed.t Quickcheck.Generator.t
-    =
+let gen_fee_payer ~account_id ~ledger ?protocol_state_view () :
+    Party.Fee_payer.t Quickcheck.Generator.t =
   let open Quickcheck.Let_syntax in
-  let%map data = gen_party_predicated_signed ?account_id ~ledger in
-  (* real signature to be added when this data inserted into a Parties.t *)
-  let authorization = Signature.dummy in
-  Party.Signed.{ data; authorization }
-
-let gen_fee_payer ~account_id ~ledger : Party.Fee_payer.t Quickcheck.Generator.t
-    =
-  let open Quickcheck.Let_syntax in
-  let%map data = gen_party_predicated_fee_payer ~account_id ~ledger in
+  let%map data =
+    gen_party_predicated_fee_payer ~account_id ~ledger ?protocol_state_view ()
+  in
   (* real signature to be added when this data inserted into a Parties.t *)
   let authorization = Signature.dummy in
   Party.Fee_payer.{ data; authorization }
@@ -546,7 +664,7 @@ let gen_parties_from ?(succeed = true)
     ~(fee_payer_keypair : Signature_lib.Keypair.t)
     ~(keymap :
        Signature_lib.Private_key.t Signature_lib.Public_key.Compressed.Map.t)
-    ~ledger ~protocol_state () =
+    ~ledger ?protocol_state_view () =
   let open Quickcheck.Let_syntax in
   let max_parties = 5 in
   let fee_payer_pk =
@@ -573,7 +691,10 @@ let gen_parties_from ?(succeed = true)
           Signature_lib.Public_key.Compressed.Table.add_exn tbl ~key:pk ~data:()) ;
     tbl
   in
-  let%bind fee_payer = gen_fee_payer ~account_id:fee_payer_account_id ~ledger in
+  let%bind fee_payer =
+    gen_fee_payer ~account_id:fee_payer_account_id ~ledger ?protocol_state_view
+      ()
+  in
   let gen_parties_with_dynamic_balance ~new_parties num_parties =
     (* table of public keys to balances, updated when generating each party
        a Map would be more principled, but threading that map through the code adds complexity
@@ -604,7 +725,7 @@ let gen_parties_from ?(succeed = true)
   let%bind memo = Signed_command_memo.gen in
   let memo_hash = Signed_command_memo.hash memo in
   let parties_dummy_signatures : Parties.t =
-    { fee_payer; other_parties; protocol_state; memo }
+    { fee_payer; other_parties; memo }
   in
   (* replace dummy signature in fee payer *)
   let fee_payer_signature =
@@ -628,9 +749,8 @@ let gen_parties_from ?(succeed = true)
   in
   let protocol_state_predicate_hash =
     Snapp_predicate.Protocol_state.digest
-      parties_dummy_signatures.protocol_state
+      parties_dummy_signatures.fee_payer.data.body.protocol_state
   in
-
   let sign_for_other_party sk =
     Signature_lib.Schnorr.sign sk
       (Random_oracle.Input.field

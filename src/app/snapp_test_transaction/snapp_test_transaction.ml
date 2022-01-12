@@ -129,16 +129,17 @@ let graphql_snapp_command (parties : Parties.t) =
       | Accept ->
           "{account:null, nonce:null}"
     in
-    let delta =
+    let balance_change =
       let sgn =
-        match Currency.Amount.Signed.sgn p.data.body.delta with
+        match Currency.Amount.Signed.sgn p.data.body.balance_change with
         | Pos ->
             "PLUS"
         | Neg ->
             "MINUS"
       in
       let magnitude =
-        Currency.Amount.(to_string (Signed.magnitude p.data.body.delta))
+        Currency.Amount.(
+          to_string (Signed.magnitude p.data.body.balance_change))
       in
       sprintf "{sign: %s, magnitude: \"%s\"}" sgn magnitude
     in
@@ -153,7 +154,7 @@ let graphql_snapp_command (parties : Parties.t) =
           callData: "0x0000000000000000000000000000000000000000000000000000000000000000", 
           sequenceEvents: [], 
           events: [], 
-          delta: %s, 
+          balance_change: %s, 
           tokenId: "1", 
           update: {
             timing: null, 
@@ -165,7 +166,7 @@ let graphql_snapp_command (parties : Parties.t) =
             appState: [%s]}, 
           publicKey: "%s"}}
     |}
-      authorization predicate delta
+      authorization predicate balance_change
       (permissions p.data.body.update.permissions)
       (verification_key p.data.body.update)
       (app_state p.data.body.update.app_state)
@@ -175,7 +176,7 @@ let graphql_snapp_command (parties : Parties.t) =
     let p = parties.fee_payer in
     let authorization = Signature.to_base58_check p.authorization in
     let nonce = Account.Nonce.to_string p.data.predicate in
-    let fee = Currency.Fee.to_string p.data.body.delta in
+    let fee = Currency.Fee.to_string p.data.body.balance_change in
     let pk = pk_string p.data.body.pk in
     sprintf
       {|

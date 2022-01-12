@@ -24,8 +24,20 @@ module Failure = struct
         | Overflow
         | Signed_command_on_snapp_account
         | Snapp_account_not_present
-        | Update_not_permitted
+        | Update_not_permitted_balance
+        | Update_not_permitted_timing_existing_account
+        | Update_not_permitted_delegate
+        | Update_not_permitted_app_state
+        | Update_not_permitted_verification_key
+        | Update_not_permitted_sequence_state
+        | Update_not_permitted_snapp_uri
+        | Update_not_permitted_token_symbol
+        | Update_not_permitted_permissions
+        | Update_not_permitted_nonce
+        | Parties_replay_check_failed
+        | Fee_payer_nonce_must_increase
         | Incorrect_nonce
+        | Invalid_fee_excess
       [@@deriving sexp, yojson, equal, compare, enum, hash]
 
       let to_latest = Fn.id
@@ -75,10 +87,34 @@ module Failure = struct
         "Signed_command_on_snapp_account"
     | Snapp_account_not_present ->
         "Snapp_account_not_present"
-    | Update_not_permitted ->
-        "Update_not_permitted"
+    | Update_not_permitted_balance ->
+        "Update_not_permitted_balance"
+    | Update_not_permitted_timing_existing_account ->
+        "Update_not_permitted_timing_existing_account"
+    | Update_not_permitted_delegate ->
+        "update_not_permitted_delegate"
+    | Update_not_permitted_app_state ->
+        "Update_not_permitted_app_state"
+    | Update_not_permitted_verification_key ->
+        "Update_not_permitted_verification_key"
+    | Update_not_permitted_sequence_state ->
+        "Update_not_permitted_sequence_state"
+    | Update_not_permitted_snapp_uri ->
+        "Update_not_permitted_snapp_uri"
+    | Update_not_permitted_token_symbol ->
+        "Update_not_permitted_token_symbol"
+    | Update_not_permitted_permissions ->
+        "Update_not_permitted_permissions"
+    | Update_not_permitted_nonce ->
+        "Update_not_permitted_nonce"
+    | Parties_replay_check_failed ->
+        "Parties_replay_check_failed"
+    | Fee_payer_nonce_must_increase ->
+        "Fee_payer_nonce_must_increase"
     | Incorrect_nonce ->
         "Incorrect_nonce"
+    | Invalid_fee_excess ->
+        "Invalid_fee_excess"
 
   let of_string = function
     | "Predicate" ->
@@ -107,10 +143,34 @@ module Failure = struct
         Ok Signed_command_on_snapp_account
     | "Snapp_account_not_present" ->
         Ok Snapp_account_not_present
-    | "Update_not_permitted" ->
-        Ok Update_not_permitted
+    | "Update_not_permitted_balance" ->
+        Ok Update_not_permitted_balance
+    | "Update_not_permitted_timing_existing_account" ->
+        Ok Update_not_permitted_timing_existing_account
+    | "update_not_permitted_delegate" ->
+        Ok Update_not_permitted_delegate
+    | "Update_not_permitted_app_state" ->
+        Ok Update_not_permitted_app_state
+    | "Update_not_permitted_verification_key" ->
+        Ok Update_not_permitted_verification_key
+    | "Update_not_permitted_sequence_state" ->
+        Ok Update_not_permitted_sequence_state
+    | "Update_not_permitted_snapp_uri" ->
+        Ok Update_not_permitted_snapp_uri
+    | "Update_not_permitted_token_symbol" ->
+        Ok Update_not_permitted_token_symbol
+    | "Update_not_permitted_permissions" ->
+        Ok Update_not_permitted_permissions
+    | "Update_not_permitted_nonce" ->
+        Ok Update_not_permitted_nonce
+    | "Parties_replay_check_failed" ->
+        Ok Parties_replay_check_failed
+    | "Fee_payer_nonce_must_increase" ->
+        Ok Fee_payer_nonce_must_increase
     | "Incorrect_nonce" ->
         Ok Incorrect_nonce
+    | "Invalid_fee_excess" ->
+        Ok Invalid_fee_excess
     | _ ->
         Error "Signed_command_status.Failure.of_string: Unknown value"
 
@@ -151,10 +211,44 @@ module Failure = struct
         "The source of a signed command cannot be a snapp account"
     | Snapp_account_not_present ->
         "A snapp account does not exist"
-    | Update_not_permitted ->
-        "An account is not permitted to make the given update"
+    | Update_not_permitted_balance ->
+        "The authentication for an account didn't allow the requested update \
+         to its balance"
+    | Update_not_permitted_timing_existing_account ->
+        "The timing of an existing account cannot be updated"
+    | Update_not_permitted_delegate ->
+        "The authentication for an account didn't allow the requested update \
+         to its delegate"
+    | Update_not_permitted_app_state ->
+        "The authentication for an account didn't allow the requested update \
+         to its app state"
+    | Update_not_permitted_verification_key ->
+        "The authentication for an account didn't allow the requested update \
+         to its verification key"
+    | Update_not_permitted_sequence_state ->
+        "The authentication for an account didn't allow the requested update \
+         to its sequence state"
+    | Update_not_permitted_snapp_uri ->
+        "The authentication for an account didn't allow the requested update \
+         to its snapp URI"
+    | Update_not_permitted_token_symbol ->
+        "The authentication for an account didn't allow the requested update \
+         to its token symbol"
+    | Update_not_permitted_permissions ->
+        "The authentication for an account didn't allow the requested update \
+         to its permissions"
+    | Update_not_permitted_nonce ->
+        "The authentication for an account didn't allow the requested update \
+         to its nonce"
+    | Parties_replay_check_failed ->
+        "Check to avoid replays failed. The party must increment nonce or use \
+         full commitment if the authorization is a signature"
+    | Fee_payer_nonce_must_increase ->
+        "Fee payer party must increment its nonce"
     | Incorrect_nonce ->
         "Incorrect nonce"
+    | Invalid_fee_excess ->
+        "Fee excess from parties transaction more than the transaction fees"
 
   [%%ifdef consensus_mechanism]
 
@@ -180,8 +274,20 @@ module Failure = struct
         ; overflow : 'bool
         ; signed_command_on_snapp_account : 'bool
         ; snapp_account_not_present : 'bool
-        ; update_not_permitted : 'bool
+        ; update_not_permitted_balance : 'bool
+        ; update_not_permitted_timing_existing_account : 'bool
+        ; update_not_permitted_delegate : 'bool
+        ; update_not_permitted_app_state : 'bool
+        ; update_not_permitted_verification_key : 'bool
+        ; update_not_permitted_sequence_state : 'bool
+        ; update_not_permitted_snapp_uri : 'bool
+        ; update_not_permitted_token_symbol : 'bool
+        ; update_not_permitted_permissions : 'bool
+        ; update_not_permitted_nonce : 'bool
+        ; parties_replay_check_failed : 'bool
+        ; fee_payer_nonce_must_increase : 'bool
         ; incorrect_nonce : 'bool
+        ; invalid_fee_excess : 'bool
         }
       [@@deriving hlist, equal, sexp, compare]
 
@@ -199,8 +305,20 @@ module Failure = struct
           ; overflow
           ; signed_command_on_snapp_account
           ; snapp_account_not_present
-          ; update_not_permitted
+          ; update_not_permitted_balance
+          ; update_not_permitted_timing_existing_account
+          ; update_not_permitted_delegate
+          ; update_not_permitted_app_state
+          ; update_not_permitted_verification_key
+          ; update_not_permitted_sequence_state
+          ; update_not_permitted_snapp_uri
+          ; update_not_permitted_token_symbol
+          ; update_not_permitted_permissions
+          ; update_not_permitted_nonce
+          ; parties_replay_check_failed
+          ; fee_payer_nonce_must_increase
           ; incorrect_nonce
+          ; invalid_fee_excess
           } =
         { predicate = f predicate
         ; source_not_present = f source_not_present
@@ -216,8 +334,24 @@ module Failure = struct
         ; overflow = f overflow
         ; signed_command_on_snapp_account = f signed_command_on_snapp_account
         ; snapp_account_not_present = f snapp_account_not_present
-        ; update_not_permitted = f update_not_permitted
+        ; update_not_permitted_balance = f update_not_permitted_balance
+        ; update_not_permitted_timing_existing_account =
+            f update_not_permitted_timing_existing_account
+        ; update_not_permitted_delegate = f update_not_permitted_delegate
+        ; update_not_permitted_app_state = f update_not_permitted_app_state
+        ; update_not_permitted_verification_key =
+            f update_not_permitted_verification_key
+        ; update_not_permitted_sequence_state =
+            f update_not_permitted_sequence_state
+        ; update_not_permitted_snapp_uri = f update_not_permitted_snapp_uri
+        ; update_not_permitted_token_symbol =
+            f update_not_permitted_token_symbol
+        ; update_not_permitted_permissions = f update_not_permitted_permissions
+        ; update_not_permitted_nonce = f update_not_permitted_nonce
+        ; parties_replay_check_failed = f parties_replay_check_failed
+        ; fee_payer_nonce_must_increase = f fee_payer_nonce_must_increase
         ; incorrect_nonce = f incorrect_nonce
+        ; invalid_fee_excess = f invalid_fee_excess
         }
     end
 
@@ -235,8 +369,20 @@ module Failure = struct
       ; overflow : 'bool
       ; signed_command_on_snapp_account : 'bool
       ; snapp_account_not_present : 'bool
-      ; update_not_permitted : 'bool
+      ; update_not_permitted_balance : 'bool
+      ; update_not_permitted_timing_existing_account : 'bool
+      ; update_not_permitted_delegate : 'bool
+      ; update_not_permitted_app_state : 'bool
+      ; update_not_permitted_verification_key : 'bool
+      ; update_not_permitted_sequence_state : 'bool
+      ; update_not_permitted_snapp_uri : 'bool
+      ; update_not_permitted_token_symbol : 'bool
+      ; update_not_permitted_permissions : 'bool
+      ; update_not_permitted_nonce : 'bool
+      ; parties_replay_check_failed : 'bool
+      ; fee_payer_nonce_must_increase : 'bool
       ; incorrect_nonce : 'bool
+      ; invalid_fee_excess : 'bool
       }
     [@@deriving equal, sexp, compare]
 
@@ -269,10 +415,34 @@ module Failure = struct
           t.signed_command_on_snapp_account
       | Snapp_account_not_present ->
           t.snapp_account_not_present
-      | Update_not_permitted ->
-          t.update_not_permitted
+      | Update_not_permitted_balance ->
+          t.update_not_permitted_balance
+      | Update_not_permitted_timing_existing_account ->
+          t.update_not_permitted_timing_existing_account
+      | Update_not_permitted_delegate ->
+          t.update_not_permitted_delegate
+      | Update_not_permitted_app_state ->
+          t.update_not_permitted_app_state
+      | Update_not_permitted_verification_key ->
+          t.update_not_permitted_verification_key
+      | Update_not_permitted_sequence_state ->
+          t.update_not_permitted_sequence_state
+      | Update_not_permitted_snapp_uri ->
+          t.update_not_permitted_snapp_uri
+      | Update_not_permitted_token_symbol ->
+          t.update_not_permitted_token_symbol
+      | Update_not_permitted_permissions ->
+          t.update_not_permitted_permissions
+      | Update_not_permitted_nonce ->
+          t.update_not_permitted_nonce
+      | Parties_replay_check_failed ->
+          t.parties_replay_check_failed
+      | Fee_payer_nonce_must_increase ->
+          t.fee_payer_nonce_must_increase
       | Incorrect_nonce ->
           t.incorrect_nonce
+      | Invalid_fee_excess ->
+          t.invalid_fee_excess
 
     type var = Boolean.var poly
 
@@ -292,8 +462,20 @@ module Failure = struct
         ; overflow
         ; signed_command_on_snapp_account
         ; snapp_account_not_present
-        ; update_not_permitted
+        ; update_not_permitted_balance
+        ; update_not_permitted_timing_existing_account
+        ; update_not_permitted_delegate
+        ; update_not_permitted_app_state
+        ; update_not_permitted_verification_key
+        ; update_not_permitted_sequence_state
+        ; update_not_permitted_snapp_uri
+        ; update_not_permitted_token_symbol
+        ; update_not_permitted_permissions
+        ; update_not_permitted_nonce
+        ; parties_replay_check_failed
+        ; fee_payer_nonce_must_increase
         ; incorrect_nonce
+        ; invalid_fee_excess
         } =
       let bool_to_int b = if b then 1 else 0 in
       let failures =
@@ -310,15 +492,54 @@ module Failure = struct
         + bool_to_int overflow
         + bool_to_int signed_command_on_snapp_account
         + bool_to_int snapp_account_not_present
-        + bool_to_int update_not_permitted
+        + bool_to_int update_not_permitted_balance
+        + bool_to_int update_not_permitted_timing_existing_account
+        + bool_to_int update_not_permitted_delegate
+        + bool_to_int update_not_permitted_app_state
+        + bool_to_int update_not_permitted_verification_key
+        + bool_to_int update_not_permitted_sequence_state
+        + bool_to_int update_not_permitted_snapp_uri
+        + bool_to_int update_not_permitted_token_symbol
+        + bool_to_int update_not_permitted_permissions
+        + bool_to_int update_not_permitted_nonce
+        + bool_to_int parties_replay_check_failed
+        + bool_to_int fee_payer_nonce_must_increase
         + bool_to_int incorrect_nonce
+        + bool_to_int invalid_fee_excess
       in
       failures = 0 || failures = 1
 
     let typ : (var, t) Typ.t =
       let bt = Boolean.typ in
       Typ.of_hlistable
-        [ bt; bt; bt; bt; bt; bt; bt; bt; bt; bt; bt; bt; bt; bt; bt ]
+        [ bt
+        ; bt
+        ; bt
+        ; bt
+        ; bt
+        ; bt
+        ; bt
+        ; bt
+        ; bt
+        ; bt
+        ; bt
+        ; bt
+        ; bt
+        ; bt
+        ; bt
+        ; bt
+        ; bt
+        ; bt
+        ; bt
+        ; bt
+        ; bt
+        ; bt
+        ; bt
+        ; bt
+        ; bt
+        ; bt
+        ; bt
+        ]
         ~value_to_hlist:Poly.to_hlist ~value_of_hlist:Poly.of_hlist
         ~var_to_hlist:Poly.to_hlist ~var_of_hlist:Poly.of_hlist
 
@@ -336,8 +557,20 @@ module Failure = struct
       ; overflow = false
       ; signed_command_on_snapp_account = false
       ; snapp_account_not_present = false
-      ; update_not_permitted = false
+      ; update_not_permitted_balance = false
+      ; update_not_permitted_timing_existing_account = false
+      ; update_not_permitted_delegate = false
+      ; update_not_permitted_app_state = false
+      ; update_not_permitted_verification_key = false
+      ; update_not_permitted_sequence_state = false
+      ; update_not_permitted_snapp_uri = false
+      ; update_not_permitted_token_symbol = false
+      ; update_not_permitted_permissions = false
+      ; update_not_permitted_nonce = false
+      ; parties_replay_check_failed = false
+      ; fee_payer_nonce_must_increase = false
       ; incorrect_nonce = false
+      ; invalid_fee_excess = false
       }
 
     let predicate = { none with predicate = true }
@@ -373,9 +606,45 @@ module Failure = struct
     let snapp_account_not_present =
       { none with snapp_account_not_present = true }
 
-    let update_not_permitted = { none with update_not_permitted = true }
+    let update_not_permitted_balance =
+      { none with update_not_permitted_balance = true }
+
+    let update_not_permitted_timing_existing_account =
+      { none with update_not_permitted_timing_existing_account = true }
+
+    let update_not_permitted_delegate =
+      { none with update_not_permitted_delegate = true }
+
+    let update_not_permitted_app_state =
+      { none with update_not_permitted_app_state = true }
+
+    let update_not_permitted_verification_key =
+      { none with update_not_permitted_verification_key = true }
+
+    let update_not_permitted_sequence_state =
+      { none with update_not_permitted_sequence_state = true }
+
+    let update_not_permitted_snapp_uri =
+      { none with update_not_permitted_snapp_uri = true }
+
+    let update_not_permitted_token_symbol =
+      { none with update_not_permitted_token_symbol = true }
+
+    let update_not_permitted_permissions =
+      { none with update_not_permitted_permissions = true }
+
+    let update_not_permitted_nonce =
+      { none with update_not_permitted_nonce = true }
+
+    let parties_replay_check_failed =
+      { none with parties_replay_check_failed = true }
+
+    let fee_payer_nonce_must_increase =
+      { none with fee_payer_nonce_must_increase = true }
 
     let incorrect_nonce = { none with incorrect_nonce = true }
+
+    let invalid_fee_excess = { none with invalid_fee_excess = true }
 
     let to_enum = function
       | { predicate = true; _ } ->
@@ -404,10 +673,34 @@ module Failure = struct
           to_enum Signed_command_on_snapp_account
       | { snapp_account_not_present = true; _ } ->
           to_enum Snapp_account_not_present
-      | { update_not_permitted = true; _ } ->
-          to_enum Update_not_permitted
+      | { update_not_permitted_balance = true; _ } ->
+          to_enum Update_not_permitted_balance
+      | { update_not_permitted_timing_existing_account = true; _ } ->
+          to_enum Update_not_permitted_timing_existing_account
+      | { update_not_permitted_delegate = true; _ } ->
+          to_enum Update_not_permitted_delegate
+      | { update_not_permitted_app_state = true; _ } ->
+          to_enum Update_not_permitted_app_state
+      | { update_not_permitted_verification_key = true; _ } ->
+          to_enum Update_not_permitted_verification_key
+      | { update_not_permitted_sequence_state = true; _ } ->
+          to_enum Update_not_permitted_sequence_state
+      | { update_not_permitted_snapp_uri = true; _ } ->
+          to_enum Update_not_permitted_snapp_uri
+      | { update_not_permitted_token_symbol = true; _ } ->
+          to_enum Update_not_permitted_token_symbol
+      | { update_not_permitted_permissions = true; _ } ->
+          to_enum Update_not_permitted_permissions
+      | { update_not_permitted_nonce = true; _ } ->
+          to_enum Update_not_permitted_nonce
+      | { parties_replay_check_failed = true; _ } ->
+          to_enum Parties_replay_check_failed
+      | { fee_payer_nonce_must_increase = true; _ } ->
+          to_enum Fee_payer_nonce_must_increase
       | { incorrect_nonce = true; _ } ->
           to_enum Incorrect_nonce
+      | { invalid_fee_excess = true; _ } ->
+          to_enum Invalid_fee_excess
       | _ ->
           0
 
@@ -446,10 +739,34 @@ module Failure = struct
                     signed_command_on_snapp_account
                 | Snapp_account_not_present ->
                     snapp_account_not_present
-                | Update_not_permitted ->
-                    update_not_permitted
+                | Update_not_permitted_balance ->
+                    update_not_permitted_balance
+                | Update_not_permitted_timing_existing_account ->
+                    update_not_permitted_timing_existing_account
+                | Update_not_permitted_delegate ->
+                    update_not_permitted_delegate
+                | Update_not_permitted_app_state ->
+                    update_not_permitted_app_state
+                | Update_not_permitted_verification_key ->
+                    update_not_permitted_verification_key
+                | Update_not_permitted_sequence_state ->
+                    update_not_permitted_sequence_state
+                | Update_not_permitted_snapp_uri ->
+                    update_not_permitted_snapp_uri
+                | Update_not_permitted_token_symbol ->
+                    update_not_permitted_token_symbol
+                | Update_not_permitted_permissions ->
+                    update_not_permitted_permissions
+                | Update_not_permitted_nonce ->
+                    update_not_permitted_nonce
+                | Parties_replay_check_failed ->
+                    parties_replay_check_failed
+                | Fee_payer_nonce_must_increase ->
+                    fee_payer_nonce_must_increase
                 | Incorrect_nonce ->
-                    incorrect_nonce )
+                    incorrect_nonce
+                | Invalid_fee_excess ->
+                    invalid_fee_excess )
           | None ->
               None )
 
@@ -512,9 +829,33 @@ module Failure = struct
 
     val snapp_account_not_present : t
 
-    val update_not_permitted : t
+    val update_not_permitted_balance : t
+
+    val update_not_permitted_timing_existing_account : t
+
+    val update_not_permitted_delegate : t
+
+    val update_not_permitted_app_state : t
+
+    val update_not_permitted_verification_key : t
+
+    val update_not_permitted_sequence_state : t
+
+    val update_not_permitted_snapp_uri : t
+
+    val update_not_permitted_token_symbol : t
+
+    val update_not_permitted_permissions : t
+
+    val update_not_permitted_nonce : t
+
+    val parties_replay_check_failed : t
+
+    val fee_payer_nonce_must_increase : t
 
     val incorrect_nonce : t
+
+    val invalid_fee_excess : t
 
     val get : t -> failure -> Boolean.var
   end = struct
@@ -536,8 +877,20 @@ module Failure = struct
            ; overflow
            ; signed_command_on_snapp_account
            ; snapp_account_not_present
-           ; update_not_permitted
+           ; update_not_permitted_balance
+           ; update_not_permitted_timing_existing_account
+           ; update_not_permitted_delegate
+           ; update_not_permitted_app_state
+           ; update_not_permitted_verification_key
+           ; update_not_permitted_sequence_state
+           ; update_not_permitted_snapp_uri
+           ; update_not_permitted_token_symbol
+           ; update_not_permitted_permissions
+           ; update_not_permitted_nonce
+           ; parties_replay_check_failed
+           ; fee_payer_nonce_must_increase
            ; incorrect_nonce
+           ; invalid_fee_excess
            } :
             As_record.var) : t =
         let user_command_failure =
@@ -556,8 +909,20 @@ module Failure = struct
                ; (overflow :> Field.Var.t)
                ; (signed_command_on_snapp_account :> Field.Var.t)
                ; (snapp_account_not_present :> Field.Var.t)
-               ; (update_not_permitted :> Field.Var.t)
+               ; (update_not_permitted_balance :> Field.Var.t)
+               ; (update_not_permitted_timing_existing_account :> Field.Var.t)
+               ; (update_not_permitted_delegate :> Field.Var.t)
+               ; (update_not_permitted_app_state :> Field.Var.t)
+               ; (update_not_permitted_verification_key :> Field.Var.t)
+               ; (update_not_permitted_sequence_state :> Field.Var.t)
+               ; (update_not_permitted_snapp_uri :> Field.Var.t)
+               ; (update_not_permitted_token_symbol :> Field.Var.t)
+               ; (update_not_permitted_permissions :> Field.Var.t)
+               ; (update_not_permitted_nonce :> Field.Var.t)
+               ; (parties_replay_check_failed :> Field.Var.t)
+               ; (fee_payer_nonce_must_increase :> Field.Var.t)
                ; (incorrect_nonce :> Field.Var.t)
+               ; (invalid_fee_excess :> Field.Var.t)
                ])
         in
         { user_command_failure }
@@ -620,9 +985,44 @@ module Failure = struct
 
     let snapp_account_not_present = mk_var As_record.snapp_account_not_present
 
-    let update_not_permitted = mk_var As_record.update_not_permitted
+    let update_not_permitted_balance =
+      mk_var As_record.update_not_permitted_balance
+
+    let update_not_permitted_timing_existing_account =
+      mk_var As_record.update_not_permitted_timing_existing_account
+
+    let update_not_permitted_delegate =
+      mk_var As_record.update_not_permitted_delegate
+
+    let update_not_permitted_app_state =
+      mk_var As_record.update_not_permitted_app_state
+
+    let update_not_permitted_verification_key =
+      mk_var As_record.update_not_permitted_verification_key
+
+    let update_not_permitted_sequence_state =
+      mk_var As_record.update_not_permitted_sequence_state
+
+    let update_not_permitted_snapp_uri =
+      mk_var As_record.update_not_permitted_snapp_uri
+
+    let update_not_permitted_token_symbol =
+      mk_var As_record.update_not_permitted_token_symbol
+
+    let update_not_permitted_permissions =
+      mk_var As_record.update_not_permitted_permissions
+
+    let update_not_permitted_nonce = mk_var As_record.update_not_permitted_nonce
+
+    let parties_replay_check_failed =
+      mk_var As_record.parties_replay_check_failed
+
+    let fee_payer_nonce_must_increase =
+      mk_var As_record.fee_payer_nonce_must_increase
 
     let incorrect_nonce = mk_var As_record.incorrect_nonce
+
+    let invalid_fee_excess = mk_var As_record.invalid_fee_excess
 
     let get { data; _ } failure = As_record.get data failure
 

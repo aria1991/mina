@@ -11,216 +11,6 @@ open Pipe_lib
 open Signature_lib
 open Pickles_types
 
-module Caqti_type_spec = struct
-  type (_, _) t =
-    | [] : (unit, unit) t
-    | ( :: ) : 'c Caqti_type.t * ('a, 'b) t -> ('c -> 'a, 'c * 'b) t
-
-  let rec to_rep : 'hlist 'tuple. ('hlist, 'tuple) t -> 'tuple Caqti_type.t =
-    fun (type hlist tuple) (spec : (hlist, tuple) t) ->
-     match spec with
-     | [] ->
-         (Caqti_type.unit : tuple Caqti_type.t)
-     | rep :: spec ->
-         Caqti_type.tup2 rep (to_rep spec)
-
-  let rec hlist_to_tuple :
-            'hlist 'tuple.    ('hlist, 'tuple) t -> (unit, 'hlist) H_list.t
-            -> 'tuple =
-    fun (type hlist tuple) (spec : (hlist, tuple) t)
-        (l : (unit, hlist) H_list.t) ->
-     match (spec, l) with
-     | [], [] ->
-         (() : tuple)
-     | _ :: spec, x :: l ->
-         ((x, hlist_to_tuple spec l) : tuple)
-
-  let rec tuple_to_hlist :
-            'hlist 'tuple.    ('hlist, 'tuple) t -> 'tuple
-            -> (unit, 'hlist) H_list.t =
-    fun (type hlist tuple) (spec : (hlist, tuple) t) (t : tuple) ->
-     match (spec, t) with
-     | [], () ->
-         ([] : (unit, hlist) H_list.t)
-     | _ :: spec, (x, t) ->
-         x :: tuple_to_hlist spec t
-end
-
-let rec vector :
-    type t n. n Nat.t -> t Caqti_type.t -> (t, n) Vector.t Caqti_type.t =
- fun n t ->
-  match n with
-  | Z ->
-      Caqti_type.(custom unit)
-        ~encode:(fun Vector.[] -> Ok ())
-        ~decode:(fun () -> Ok Vector.[])
-  | S n ->
-      let r = vector n t in
-      Caqti_type.(custom (tup2 t r))
-        ~encode:(fun Vector.(x :: xs) -> Ok (x, xs))
-        ~decode:(fun (x, xs) -> Ok (x :: xs))
-
-type _ Caqti_type.field +=
-  | Array_nullable_int : int option array Caqti_type.field
-
-(* register coding for nullable int arrays.
-   for example, the ocaml int array `[| 0; 1; 2 |]` would be encoded to
-   `'{0, 1, 2}'` for postgresql. There is no need to add the single quotes,
-   as caqti does this when using a string representation.
-   type annotations are necessary for int array values in postgresql, eg.
-   `SELECT id FROM snapp_states WHERE element_ids = '{0,1,2,...}'::int[]` *)
-let () =
-  let open Caqti_type.Field in
-  let rep = Caqti_type.String in
-  let encode xs =
-    Array.map xs ~f:(Option.value_map ~f:Int.to_string ~default:"NULL")
-    |> String.concat_array ~sep:", "
-    |> sprintf "{ %s }" |> Result.return
-  in
-  let decode s =
-    let open Result.Let_syntax in
-    let error = "Failed to decode nullable int array" in
-    let decode_elem = function
-      | "NULL" | "null" ->
-          return None
-      | elem -> (
-          try return @@ Option.some @@ Int.of_string elem
-          with _ -> Result.fail error )
-    in
-    String.chop_prefix ~prefix:"{" s
-    |> Result.of_option ~error
-    >>= fun s ->
-    String.chop_suffix ~suffix:"}" s
-    |> Result.of_option ~error
-    >>= fun s ->
-    String.filter ~f:(Char.( <> ) ' ') s
-    |> String.split ~on:',' |> List.map ~f:decode_elem |> Result.all
-    >>| List.to_array
-  in
-  let get_coding : type a. _ -> a t -> a coding =
-   fun _ -> function
-    | Array_nullable_int ->
-        Coding { rep; encode; decode }
-    | _ ->
-        assert false
-  in
-  define_coding Array_nullable_int { get_coding }
-
-(* this type may require type annotations in queries, eg.
-  `SELECT id FROM snapp_states WHERE element_ids = ?::int[]`
-*)
-let array_nullable_int_typ : int option array Caqti_type.t =
-  Caqti_type.field Array_nullable_int
-
-let array_int_typ : int array Caqti_type.t =
-  let open Result.Let_syntax in
-  let encode xs = return @@ Array.map ~f:Option.some xs in
-  let decode xs =
-    Option.all (Array.to_list xs)
-    |> Result.of_option
-         ~error:"Failed to decode int array, encountered NULL value"
-    >>| Array.of_list
-  in
-  Caqti_type.custom array_nullable_int_typ ~encode ~decode
-
-(* process a Caqti query on list of items
-   if we were instead to simply map the query over the list,
-    we'd get "in use" assertion failures for the connection
-   the bind makes sure the connection is available for
-    each query
-*)
-let rec deferred_result_list_fold ls ~init ~f =
-  let open Deferred.Result.Let_syntax in
-  match ls with
-  | [] ->
-      return init
-  | h :: t ->
-      let%bind init = f init h in
-      deferred_result_list_fold t ~init ~f
-
-let deferred_result_list_mapi ~f xs =
-  let open Deferred.Result.Let_syntax in
-  deferred_result_list_fold xs ~init:(0, []) ~f:(fun (index, acc) x ->
-      let%map res = f index x in
-      (Int.succ index, res :: acc))
-  >>| snd >>| List.rev
-
-let deferred_result_list_map ~f = deferred_result_list_mapi ~f:(Fn.const f)
-
-let deferred_result_lift_opt :
-    ('a, 'err) Deferred.Result.t option -> ('a option, 'err) Deferred.Result.t =
-  let open Deferred.Result.Let_syntax in
-  function Some x -> x >>| Option.some | None -> return None
-
-let add_if_some (f : 'arg -> ('res, 'err) Deferred.Result.t) :
-    'arg option -> ('res option, 'err) Deferred.Result.t =
-  Fn.compose deferred_result_lift_opt @@ Option.map ~f
-
-let add_if_set (f : 'arg -> ('res, 'err) Deferred.Result.t) :
-    'arg Snapp_basic.Set_or_keep.t -> ('res option, 'err) Deferred.Result.t =
-  Fn.compose (add_if_some f) Snapp_basic.Set_or_keep.to_option
-
-let add_if_check (f : 'arg -> ('res, 'err) Deferred.Result.t) :
-    'arg Snapp_basic.Or_ignore.t -> ('res option, 'err) Deferred.Result.t =
-  Fn.compose (add_if_some f) Snapp_basic.Or_ignore.to_option
-
-(* `select_cols ~select:"s0" ~table_name:"t0" ["col0", "col1", ...]`
-   creates the string
-   `"SELECT s0 FROM t0 WHERE col0 = ? AND col1 = ? AND..."`.
-   The optional `tannot` function maps column names to type annotations. *)
-let select_cols ~(select : string) ~(table_name : string)
-    ?(tannot : string -> string option = Fn.const None) (cols : string list) :
-    string =
-  List.map cols ~f:(fun col ->
-      let annot =
-        match tannot col with None -> "" | Some tannot -> "::" ^ tannot
-      in
-      sprintf "%s = ?%s" col annot)
-  |> String.concat ~sep:" AND "
-  |> sprintf "SELECT %s FROM %s WHERE %s" select table_name
-
-(* `insert_into_cols ~returning:ret0 ~table_name:t0 ["col0", "col1", ...]`
-   creates the string
-   `"INSERT INTO t0 (col0, col1, ...) VALUES (?, ?, ...) RETURNING ret0"`.
-   The optional `tannot` function maps column names to type annotations.
-   No type annotation is included if `tannot` returns an empty string. *)
-let insert_into_cols ~(returning : string) ~(table_name : string)
-    ?(tannot : string -> string option = Fn.const None) (cols : string list) :
-    string =
-  let values =
-    List.map cols ~f:(fun col ->
-        match tannot col with None -> "?" | Some tannot -> "?::" ^ tannot)
-    |> String.concat ~sep:", "
-  in
-  sprintf "INSERT INTO %s (%s) VALUES (%s) RETURNING %s" table_name
-    (String.concat ~sep:", " cols)
-    values returning
-
-let select_insert_into_cols ~(select : string * 'select Caqti_type.t)
-    ~(table_name : string) ?tannot ~(cols : string list * 'cols Caqti_type.t)
-    (module Conn : CONNECTION) (value : 'cols) =
-  let open Deferred.Result.Let_syntax in
-  Conn.find_opt
-    ( Caqti_request.find_opt (snd cols) (snd select)
-    @@ select_cols ~select:(fst select) ~table_name ?tannot (fst cols) )
-    value
-  >>= function
-  | Some id ->
-      return id
-  | None ->
-      Conn.find
-        ( Caqti_request.find (snd cols) (snd select)
-        @@ insert_into_cols ~returning:(fst select) ~table_name ?tannot
-             (fst cols) )
-        value
-
-let query ~f pool =
-  match%bind Caqti_async.Pool.use f pool with
-  | Ok v ->
-      return v
-  | Error msg ->
-      failwithf "Error querying db, error: %s" (Caqti_error.show msg) ()
-
 module Public_key = struct
   let find (module Conn : CONNECTION) (t : Public_key.Compressed.t) =
     let public_key = Public_key.Compressed.to_base58_check t in
@@ -251,47 +41,73 @@ module Public_key = struct
 end
 
 module Snapp_state_data = struct
+  let table_name = "snapp_state_data"
+
   let add_if_doesn't_exist (module Conn : CONNECTION)
       (fp : Pickles.Backend.Tick.Field.t) =
-    select_insert_into_cols ~select:("id", Caqti_type.int)
-      ~table_name:"snapp_state_data"
+    Mina_caqti.select_insert_into_cols ~select:("id", Caqti_type.int)
+      ~table_name
       ~cols:([ "field" ], Caqti_type.string)
       (module Conn)
       (Pickles.Backend.Tick.Field.to_string fp)
+
+  let load (module Conn : CONNECTION) id =
+    Conn.find
+      (Caqti_request.find Caqti_type.int Caqti_type.string
+         (Mina_caqti.select_cols_from_id ~table_name ~cols:[ "field" ]))
+      id
 end
 
 module Snapp_state_data_array = struct
+  let table_name = "snapp_state_data_array"
+
   let add_if_doesn't_exist (module Conn : CONNECTION)
       (fps : Pickles.Backend.Tick.Field.t array) =
     let open Deferred.Result.Let_syntax in
     let%bind (element_ids : int array) =
-      deferred_result_list_map (Array.to_list fps)
+      Mina_caqti.deferred_result_list_map (Array.to_list fps)
         ~f:(Snapp_state_data.add_if_doesn't_exist (module Conn))
       >>| Array.of_list
     in
-    select_insert_into_cols ~select:("id", Caqti_type.int)
-      ~table_name:"snapp_state_data_array"
-      ~cols:([ "element_ids" ], array_int_typ)
+    Mina_caqti.select_insert_into_cols ~select:("id", Caqti_type.int)
+      ~table_name
+      ~cols:([ "element_ids" ], Mina_caqti.array_int_typ)
       ~tannot:(function "element_ids" -> Some "int[]" | _ -> None)
       (module Conn)
       element_ids
+
+  let load (module Conn : CONNECTION) id =
+    Conn.find
+      (Caqti_request.find Caqti_type.int Mina_caqti.array_int_typ
+         (Mina_caqti.select_cols_from_id ~table_name ~cols:[ "element_ids" ]))
+      id
 end
 
 module Snapp_states = struct
+  let table_name = "snapp_states"
+
   let add_if_doesn't_exist (module Conn : CONNECTION)
       (fps : (Pickles.Backend.Tick.Field.t option, 'n) Vector.vec) =
     let open Deferred.Result.Let_syntax in
     let%bind (element_ids : int option array) =
-      deferred_result_list_map (Vector.to_list fps)
-        ~f:(add_if_some @@ Snapp_state_data.add_if_doesn't_exist (module Conn))
+      Mina_caqti.deferred_result_list_map (Vector.to_list fps)
+        ~f:
+          ( Mina_caqti.add_if_some
+          @@ Snapp_state_data.add_if_doesn't_exist (module Conn) )
       >>| Array.of_list
     in
-    select_insert_into_cols ~select:("id", Caqti_type.int)
-      ~table_name:"snapp_states"
-      ~cols:([ "element_ids" ], array_nullable_int_typ)
+    Mina_caqti.select_insert_into_cols ~select:("id", Caqti_type.int)
+      ~table_name
+      ~cols:([ "element_ids" ], Mina_caqti.array_nullable_int_typ)
       ~tannot:(function "element_ids" -> Some "int[]" | _ -> None)
       (module Conn)
       element_ids
+
+  let load (module Conn : CONNECTION) id =
+    Conn.find
+      (Caqti_request.find Caqti_type.int Mina_caqti.array_nullable_int_typ
+         (Mina_caqti.select_cols_from_id ~table_name ~cols:[ "element_ids" ]))
+      id
 end
 
 module Snapp_verification_keys = struct
@@ -299,11 +115,10 @@ module Snapp_verification_keys = struct
   [@@deriving fields, hlist]
 
   let typ =
-    let open Caqti_type_spec in
-    let spec = Caqti_type.[ string; string ] in
-    let encode t = Ok (hlist_to_tuple spec (to_hlist t)) in
-    let decode t = Ok (of_hlist (tuple_to_hlist spec t)) in
-    Caqti_type.custom ~encode ~decode (to_rep spec)
+    Mina_caqti.Type_spec.custom_type ~to_hlist ~of_hlist
+      Caqti_type.[ string; string ]
+
+  let table_name = "snapp_verification_keys"
 
   let add_if_doesn't_exist (module Conn : CONNECTION)
       (vk :
@@ -318,10 +133,16 @@ module Snapp_verification_keys = struct
     in
     let hash = Pickles.Backend.Tick.Field.to_string vk.hash in
     let value = { hash; verification_key } in
-    select_insert_into_cols ~select:("id", Caqti_type.int)
-      ~table_name:"snapp_verification_keys" ~cols:(Fields.names, typ)
+    Mina_caqti.select_insert_into_cols ~select:("id", Caqti_type.int)
+      ~table_name ~cols:(Fields.names, typ)
       (module Conn)
       value
+
+  let load (module Conn : CONNECTION) id =
+    Conn.find
+      (Caqti_request.find Caqti_type.int typ
+         (Mina_caqti.select_cols_from_id ~table_name ~cols:Fields.names))
+      id
 end
 
 module Snapp_permissions = struct
@@ -369,12 +190,12 @@ module Snapp_permissions = struct
     ; set_snapp_uri : Permissions.Auth_required.t
     ; edit_sequence_state : Permissions.Auth_required.t
     ; set_token_symbol : Permissions.Auth_required.t
+    ; increment_nonce : Permissions.Auth_required.t
     }
   [@@deriving fields, hlist]
 
   let typ =
-    let open Caqti_type_spec in
-    let spec =
+    Mina_caqti.Type_spec.custom_type ~to_hlist ~of_hlist
       Caqti_type.
         [ bool
         ; auth_required_typ
@@ -386,11 +207,10 @@ module Snapp_permissions = struct
         ; auth_required_typ
         ; auth_required_typ
         ; auth_required_typ
+        ; auth_required_typ
         ]
-    in
-    let encode t = Ok (hlist_to_tuple spec (to_hlist t)) in
-    let decode t = Ok (of_hlist (tuple_to_hlist spec t)) in
-    Caqti_type.custom ~encode ~decode (to_rep spec)
+
+  let table_name = "snapp_permissions"
 
   let add_if_doesn't_exist (module Conn : CONNECTION) (perms : Permissions.t) =
     let value =
@@ -404,29 +224,36 @@ module Snapp_permissions = struct
       ; set_snapp_uri = perms.set_snapp_uri
       ; edit_sequence_state = perms.edit_sequence_state
       ; set_token_symbol = perms.set_token_symbol
+      ; increment_nonce = perms.increment_nonce
       }
     in
-    select_insert_into_cols ~select:("id", Caqti_type.int)
-      ~table_name:"snapp_permissions" ~cols:(Fields.names, typ)
+    Mina_caqti.select_insert_into_cols ~select:("id", Caqti_type.int)
+      ~table_name ~cols:(Fields.names, typ)
       (module Conn)
       value
+
+  let load (module Conn : CONNECTION) id =
+    Conn.find
+      (Caqti_request.find Caqti_type.int typ
+         (Mina_caqti.select_cols_from_id ~table_name ~cols:Fields.names))
+      id
 end
 
 module Snapp_timing_info = struct
   type t =
     { initial_minimum_balance : int64
     ; cliff_time : int64
+    ; cliff_amount : int64
     ; vesting_period : int64
     ; vesting_increment : int64
     }
   [@@deriving fields, hlist]
 
   let typ =
-    let open Caqti_type_spec in
-    let spec = Caqti_type.[ int64; int64; int64; int64 ] in
-    let encode t = Ok (hlist_to_tuple spec (to_hlist t)) in
-    let decode t = Ok (of_hlist (tuple_to_hlist spec t)) in
-    Caqti_type.custom ~encode ~decode (to_rep spec)
+    Mina_caqti.Type_spec.custom_type ~to_hlist ~of_hlist
+      Caqti_type.[ int64; int64; int64; int64; int64 ]
+
+  let table_name = "snapp_timing_info"
 
   let add_if_doesn't_exist (module Conn : CONNECTION)
       (timing_info : Party.Update.Timing_info.t) =
@@ -435,6 +262,10 @@ module Snapp_timing_info = struct
       |> Unsigned.UInt64.to_int64
     in
     let cliff_time = timing_info.cliff_time |> Unsigned.UInt32.to_int64 in
+    let cliff_amount =
+      timing_info.cliff_amount |> Currency.Amount.to_uint64
+      |> Unsigned.UInt64.to_int64
+    in
     let vesting_period =
       timing_info.vesting_period |> Unsigned.UInt32.to_int64
     in
@@ -443,12 +274,23 @@ module Snapp_timing_info = struct
       |> Unsigned.UInt64.to_int64
     in
     let value =
-      { initial_minimum_balance; cliff_time; vesting_period; vesting_increment }
+      { initial_minimum_balance
+      ; cliff_time
+      ; cliff_amount
+      ; vesting_period
+      ; vesting_increment
+      }
     in
-    select_insert_into_cols ~select:("id", Caqti_type.int)
-      ~table_name:"snapp_timing_info" ~cols:(Fields.names, typ)
+    Mina_caqti.select_insert_into_cols ~select:("id", Caqti_type.int)
+      ~table_name ~cols:(Fields.names, typ)
       (module Conn)
       value
+
+  let load (module Conn : CONNECTION) id =
+    Conn.find
+      (Caqti_request.find Caqti_type.int typ
+         (Mina_caqti.select_cols_from_id ~table_name ~cols:Fields.names))
+      id
 end
 
 module Snapp_updates = struct
@@ -464,8 +306,7 @@ module Snapp_updates = struct
   [@@deriving fields, hlist]
 
   let typ =
-    let open Caqti_type_spec in
-    let spec =
+    Mina_caqti.Type_spec.custom_type ~to_hlist ~of_hlist
       Caqti_type.
         [ int
         ; option int
@@ -475,10 +316,8 @@ module Snapp_updates = struct
         ; option string
         ; option int
         ]
-    in
-    let encode t = Ok (hlist_to_tuple spec (to_hlist t)) in
-    let decode t = Ok (of_hlist (tuple_to_hlist spec t)) in
-    Caqti_type.custom ~encode ~decode (to_rep spec)
+
+  let table_name = "snapp_updates"
 
   let add_if_doesn't_exist (module Conn : CONNECTION) (update : Party.Update.t)
       =
@@ -488,20 +327,22 @@ module Snapp_updates = struct
       |> Snapp_states.add_if_doesn't_exist (module Conn)
     in
     let%bind delegate_id =
-      add_if_set (Public_key.add_if_doesn't_exist (module Conn)) update.delegate
+      Mina_caqti.add_if_snapp_set
+        (Public_key.add_if_doesn't_exist (module Conn))
+        update.delegate
     in
     let%bind verification_key_id =
-      add_if_set
+      Mina_caqti.add_if_snapp_set
         (Snapp_verification_keys.add_if_doesn't_exist (module Conn))
         update.verification_key
     in
     let%bind permissions_id =
-      add_if_set
+      Mina_caqti.add_if_snapp_set
         (Snapp_permissions.add_if_doesn't_exist (module Conn))
         update.permissions
     in
     let%bind timing_id =
-      add_if_set
+      Mina_caqti.add_if_snapp_set
         (Snapp_timing_info.add_if_doesn't_exist (module Conn))
         update.timing
     in
@@ -517,88 +358,16 @@ module Snapp_updates = struct
       ; timing_id
       }
     in
-    select_insert_into_cols ~select:("id", Caqti_type.int)
-      ~table_name:"snapp_updates" ~cols:(Fields.names, typ)
+    Mina_caqti.select_insert_into_cols ~select:("id", Caqti_type.int)
+      ~table_name ~cols:(Fields.names, typ)
       (module Conn)
       value
-end
 
-module Snapp_party_body = struct
-  type t =
-    { public_key_id : int
-    ; update_id : int
-    ; token_id : int64
-    ; delta : int64
-    ; events_ids : int array
-    ; sequence_events_ids : int array
-    ; call_data_id : int
-    ; depth : int
-    }
-  [@@deriving fields, hlist]
-
-  let typ =
-    let open Caqti_type_spec in
-    let spec =
-      Caqti_type.
-        [ int; int; int64; int64; array_int_typ; array_int_typ; int; int ]
-    in
-    let encode t = Ok (hlist_to_tuple spec (to_hlist t)) in
-    let decode t = Ok (of_hlist (tuple_to_hlist spec t)) in
-    Caqti_type.custom ~encode ~decode (to_rep spec)
-
-  let add_if_doesn't_exist (module Conn : CONNECTION) (body : Party.Body.t) =
-    let open Deferred.Result.Let_syntax in
-    let%bind public_key_id =
-      Public_key.add_if_doesn't_exist (module Conn) body.pk
-    in
-    let%bind update_id =
-      Snapp_updates.add_if_doesn't_exist (module Conn) body.update
-    in
-    let%bind events_ids =
-      deferred_result_list_map body.events
-        ~f:(Snapp_state_data_array.add_if_doesn't_exist (module Conn))
-      >>| Array.of_list
-    in
-    let%bind sequence_events_ids =
-      deferred_result_list_map body.sequence_events
-        ~f:(Snapp_state_data_array.add_if_doesn't_exist (module Conn))
-      >>| Array.of_list
-    in
-    let%bind call_data_id =
-      Snapp_state_data.add_if_doesn't_exist (module Conn) body.call_data
-    in
-    let token_id =
-      Unsigned.UInt64.to_int64 @@ Token_id.to_uint64 body.token_id
-    in
-    let delta =
-      let magnitude =
-        Currency.Amount.to_uint64 body.delta.magnitude
-        |> Unsigned.UInt64.to_int64
-      in
-      match body.delta.sgn with
-      | Sgn.Pos ->
-          magnitude
-      | Sgn.Neg ->
-          Int64.neg magnitude
-    in
-    let depth = body.depth in
-    let value =
-      { public_key_id
-      ; update_id
-      ; token_id
-      ; delta
-      ; events_ids
-      ; sequence_events_ids
-      ; call_data_id
-      ; depth
-      }
-    in
-    select_insert_into_cols ~select:("id", Caqti_type.int)
-      ~table_name:"snapp_party_body" ~cols:(Fields.names, typ)
-      ~tannot:(function
-        | "events_ids" | "sequence_events_ids" -> Some "int[]" | _ -> None)
-      (module Conn)
-      value
+  let load (module Conn : CONNECTION) id =
+    Conn.find
+      (Caqti_request.find Caqti_type.int typ
+         (Mina_caqti.select_cols_from_id ~table_name ~cols:Fields.names))
+      id
 end
 
 module Snapp_balance_bounds = struct
@@ -606,11 +375,10 @@ module Snapp_balance_bounds = struct
   [@@deriving fields, hlist]
 
   let typ =
-    let open Caqti_type_spec in
-    let spec = Caqti_type.[ int64; int64 ] in
-    let encode t = Ok (hlist_to_tuple spec (to_hlist t)) in
-    let decode t = Ok (of_hlist (tuple_to_hlist spec t)) in
-    Caqti_type.custom ~encode ~decode (to_rep spec)
+    Mina_caqti.Type_spec.custom_type ~to_hlist ~of_hlist
+      Caqti_type.[ int64; int64 ]
+
+  let table_name = "snapp_balance_bounds"
 
   let add_if_doesn't_exist (module Conn : CONNECTION)
       (balance_bounds :
@@ -624,10 +392,16 @@ module Snapp_balance_bounds = struct
       |> Unsigned.UInt64.to_int64
     in
     let value = { balance_lower_bound; balance_upper_bound } in
-    select_insert_into_cols ~select:("id", Caqti_type.int)
-      ~table_name:"snapp_balance_bounds" ~cols:(Fields.names, typ)
+    Mina_caqti.select_insert_into_cols ~select:("id", Caqti_type.int)
+      ~table_name ~cols:(Fields.names, typ)
       (module Conn)
       value
+
+  let load (module Conn : CONNECTION) id =
+    Conn.find
+      (Caqti_request.find Caqti_type.int typ
+         (Mina_caqti.select_cols_from_id ~table_name ~cols:Fields.names))
+      id
 end
 
 module Snapp_nonce_bounds = struct
@@ -635,11 +409,10 @@ module Snapp_nonce_bounds = struct
   [@@deriving fields, hlist]
 
   let typ =
-    let open Caqti_type_spec in
-    let spec = Caqti_type.[ int64; int64 ] in
-    let encode t = Ok (hlist_to_tuple spec (to_hlist t)) in
-    let decode t = Ok (of_hlist (tuple_to_hlist spec t)) in
-    Caqti_type.custom ~encode ~decode (to_rep spec)
+    Mina_caqti.Type_spec.custom_type ~to_hlist ~of_hlist
+      Caqti_type.[ int64; int64 ]
+
+  let table_name = "snapp_nonce_bounds"
 
   let add_if_doesn't_exist (module Conn : CONNECTION)
       (nonce_bounds :
@@ -648,10 +421,16 @@ module Snapp_nonce_bounds = struct
     let nonce_lower_bound = Unsigned.UInt32.to_int64 nonce_bounds.lower in
     let nonce_upper_bound = Unsigned.UInt32.to_int64 nonce_bounds.upper in
     let value = { nonce_lower_bound; nonce_upper_bound } in
-    select_insert_into_cols ~select:("id", Caqti_type.int)
-      ~table_name:"snapp_nonce_bounds" ~cols:(Fields.names, typ)
+    Mina_caqti.select_insert_into_cols ~select:("id", Caqti_type.int)
+      ~table_name ~cols:(Fields.names, typ)
       (module Conn)
       value
+
+  let load (module Conn : CONNECTION) id =
+    Conn.find
+      (Caqti_request.find Caqti_type.int typ
+         (Mina_caqti.select_cols_from_id ~table_name ~cols:Fields.names))
+      id
 end
 
 module Snapp_account = struct
@@ -668,8 +447,7 @@ module Snapp_account = struct
   [@@deriving fields, hlist]
 
   let typ =
-    let open Caqti_type_spec in
-    let spec =
+    Mina_caqti.Type_spec.custom_type ~to_hlist ~of_hlist
       Caqti_type.
         [ option int
         ; option int
@@ -680,38 +458,38 @@ module Snapp_account = struct
         ; option int
         ; option bool
         ]
-    in
-    let encode t = Ok (hlist_to_tuple spec (to_hlist t)) in
-    let decode t = Ok (of_hlist (tuple_to_hlist spec t)) in
-    Caqti_type.custom ~encode ~decode (to_rep spec)
+
+  let table_name = "snapp_account"
 
   let add_if_doesn't_exist (module Conn : CONNECTION)
       (acct : Snapp_predicate.Account.t) =
     let open Deferred.Result.Let_syntax in
     let%bind balance_id =
-      add_if_check
+      Mina_caqti.add_if_snapp_check
         (Snapp_balance_bounds.add_if_doesn't_exist (module Conn))
         acct.balance
     in
     let%bind nonce_id =
-      add_if_check
+      Mina_caqti.add_if_snapp_check
         (Snapp_nonce_bounds.add_if_doesn't_exist (module Conn))
         acct.nonce
     in
     let%bind public_key_id =
-      add_if_check
+      Mina_caqti.add_if_snapp_check
         (Public_key.add_if_doesn't_exist (module Conn))
         acct.public_key
     in
     let%bind delegate_id =
-      add_if_check (Public_key.add_if_doesn't_exist (module Conn)) acct.delegate
+      Mina_caqti.add_if_snapp_check
+        (Public_key.add_if_doesn't_exist (module Conn))
+        acct.delegate
     in
     let%bind state_id =
       Vector.map ~f:Snapp_basic.Or_ignore.to_option acct.state
       |> Snapp_states.add_if_doesn't_exist (module Conn)
     in
     let%bind sequence_state_id =
-      add_if_check
+      Mina_caqti.add_if_snapp_check
         (Snapp_state_data.add_if_doesn't_exist (module Conn))
         acct.sequence_state
     in
@@ -731,10 +509,16 @@ module Snapp_account = struct
       ; proved_state
       }
     in
-    select_insert_into_cols ~select:("id", Caqti_type.int)
-      ~table_name:"snapp_account" ~cols:(Fields.names, typ)
+    Mina_caqti.select_insert_into_cols ~select:("id", Caqti_type.int)
+      ~table_name ~cols:(Fields.names, typ)
       (module Conn)
       value
+
+  let load (module Conn : CONNECTION) id =
+    Conn.find
+      (Caqti_request.find Caqti_type.int typ
+         (Mina_caqti.select_cols_from_id ~table_name ~cols:Fields.names))
+      id
 end
 
 module Snapp_predicate = struct
@@ -767,13 +551,10 @@ module Snapp_predicate = struct
     Caqti_type.enum "snapp_predicate_type" ~encode ~decode
 
   let typ =
-    let open Caqti_type_spec in
-    let spec =
+    Mina_caqti.Type_spec.custom_type ~to_hlist ~of_hlist
       Caqti_type.[ snapp_predicate_kind_typ; option int; option int64 ]
-    in
-    let encode t = Ok (hlist_to_tuple spec (to_hlist t)) in
-    let decode t = Ok (of_hlist (tuple_to_hlist spec t)) in
-    Caqti_type.custom ~encode ~decode (to_rep spec)
+
+  let table_name = "snapp_predicate"
 
   let add_if_doesn't_exist (module Conn : CONNECTION)
       (predicate : Party.Predicate.t) =
@@ -794,10 +575,16 @@ module Snapp_predicate = struct
           None
     in
     let value = { kind; account_id; nonce } in
-    select_insert_into_cols ~select:("id", Caqti_type.int)
-      ~table_name:"snapp_predicate" ~cols:(Fields.names, typ)
+    Mina_caqti.select_insert_into_cols ~select:("id", Caqti_type.int)
+      ~table_name ~cols:(Fields.names, typ)
       (module Conn)
       value
+
+  let load (module Conn : CONNECTION) id =
+    Conn.find
+      (Caqti_request.find Caqti_type.int typ
+         (Mina_caqti.select_cols_from_id ~table_name ~cols:Fields.names))
+      id
 end
 
 module Snapp_token_id_bounds = struct
@@ -805,11 +592,10 @@ module Snapp_token_id_bounds = struct
   [@@deriving fields, hlist]
 
   let typ =
-    let open Caqti_type_spec in
-    let spec = Caqti_type.[ int64; int64 ] in
-    let encode t = Ok (hlist_to_tuple spec (to_hlist t)) in
-    let decode t = Ok (of_hlist (tuple_to_hlist spec t)) in
-    Caqti_type.custom ~encode ~decode (to_rep spec)
+    Mina_caqti.Type_spec.custom_type ~to_hlist ~of_hlist
+      Caqti_type.[ int64; int64 ]
+
+  let table_name = "snapp_token_id_bounds"
 
   let add_if_doesn't_exist (module Conn : CONNECTION)
       (token_id_bounds : Token_id.t Mina_base.Snapp_predicate.Closed_interval.t)
@@ -821,10 +607,16 @@ module Snapp_token_id_bounds = struct
       token_id_bounds.upper |> Token_id.to_uint64 |> Unsigned.UInt64.to_int64
     in
     let value = { token_id_lower_bound; token_id_upper_bound } in
-    select_insert_into_cols ~select:("id", Caqti_type.int)
-      ~table_name:"snapp_token_id_bounds" ~cols:(Fields.names, typ)
+    Mina_caqti.select_insert_into_cols ~select:("id", Caqti_type.int)
+      ~table_name ~cols:(Fields.names, typ)
       (module Conn)
       value
+
+  let load (module Conn : CONNECTION) id =
+    Conn.find
+      (Caqti_request.find Caqti_type.int typ
+         (Mina_caqti.select_cols_from_id ~table_name ~cols:Fields.names))
+      id
 end
 
 module Snapp_timestamp_bounds = struct
@@ -832,11 +624,10 @@ module Snapp_timestamp_bounds = struct
   [@@deriving fields, hlist]
 
   let typ =
-    let open Caqti_type_spec in
-    let spec = Caqti_type.[ int64; int64 ] in
-    let encode t = Ok (hlist_to_tuple spec (to_hlist t)) in
-    let decode t = Ok (of_hlist (tuple_to_hlist spec t)) in
-    Caqti_type.custom ~encode ~decode (to_rep spec)
+    Mina_caqti.Type_spec.custom_type ~to_hlist ~of_hlist
+      Caqti_type.[ int64; int64 ]
+
+  let table_name = "snapp_timestamp_bounds"
 
   let add_if_doesn't_exist (module Conn : CONNECTION)
       (timestamp_bounds :
@@ -844,10 +635,16 @@ module Snapp_timestamp_bounds = struct
     let timestamp_lower_bound = Block_time.to_int64 timestamp_bounds.lower in
     let timestamp_upper_bound = Block_time.to_int64 timestamp_bounds.upper in
     let value = { timestamp_lower_bound; timestamp_upper_bound } in
-    select_insert_into_cols ~select:("id", Caqti_type.int)
-      ~table_name:"snapp_timestamp_bounds" ~cols:(Fields.names, typ)
+    Mina_caqti.select_insert_into_cols ~select:("id", Caqti_type.int)
+      ~table_name ~cols:(Fields.names, typ)
       (module Conn)
       value
+
+  let load (module Conn : CONNECTION) id =
+    Conn.find
+      (Caqti_request.find Caqti_type.int typ
+         (Mina_caqti.select_cols_from_id ~table_name ~cols:Fields.names))
+      id
 end
 
 module Snapp_length_bounds = struct
@@ -855,11 +652,10 @@ module Snapp_length_bounds = struct
   [@@deriving fields, hlist]
 
   let typ =
-    let open Caqti_type_spec in
-    let spec = Caqti_type.[ int64; int64 ] in
-    let encode t = Ok (hlist_to_tuple spec (to_hlist t)) in
-    let decode t = Ok (of_hlist (tuple_to_hlist spec t)) in
-    Caqti_type.custom ~encode ~decode (to_rep spec)
+    Mina_caqti.Type_spec.custom_type ~to_hlist ~of_hlist
+      Caqti_type.[ int64; int64 ]
+
+  let table_name = "snapp_length_bounds"
 
   let add_if_doesn't_exist (module Conn : CONNECTION)
       (length_bounds :
@@ -867,10 +663,16 @@ module Snapp_length_bounds = struct
     let length_lower_bound = Unsigned.UInt32.to_int64 length_bounds.lower in
     let length_upper_bound = Unsigned.UInt32.to_int64 length_bounds.upper in
     let value = { length_lower_bound; length_upper_bound } in
-    select_insert_into_cols ~select:("id", Caqti_type.int)
-      ~table_name:"snapp_length_bounds" ~cols:(Fields.names, typ)
+    Mina_caqti.select_insert_into_cols ~select:("id", Caqti_type.int)
+      ~table_name ~cols:(Fields.names, typ)
       (module Conn)
       value
+
+  let load (module Conn : CONNECTION) id =
+    Conn.find
+      (Caqti_request.find Caqti_type.int typ
+         (Mina_caqti.select_cols_from_id ~table_name ~cols:Fields.names))
+      id
 end
 
 module Snapp_amount_bounds = struct
@@ -878,11 +680,10 @@ module Snapp_amount_bounds = struct
   [@@deriving fields, hlist]
 
   let typ =
-    let open Caqti_type_spec in
-    let spec = Caqti_type.[ int64; int64 ] in
-    let encode t = Ok (hlist_to_tuple spec (to_hlist t)) in
-    let decode t = Ok (of_hlist (tuple_to_hlist spec t)) in
-    Caqti_type.custom ~encode ~decode (to_rep spec)
+    Mina_caqti.Type_spec.custom_type ~to_hlist ~of_hlist
+      Caqti_type.[ int64; int64 ]
+
+  let table_name = "snapp_amount_bounds"
 
   let add_if_doesn't_exist (module Conn : CONNECTION)
       (amount_bounds :
@@ -894,10 +695,16 @@ module Snapp_amount_bounds = struct
       Currency.Amount.to_uint64 amount_bounds.upper |> Unsigned.UInt64.to_int64
     in
     let value = { amount_lower_bound; amount_upper_bound } in
-    select_insert_into_cols ~select:("id", Caqti_type.int)
-      ~table_name:"snapp_amount_bounds" ~cols:(Fields.names, typ)
+    Mina_caqti.select_insert_into_cols ~select:("id", Caqti_type.int)
+      ~table_name ~cols:(Fields.names, typ)
       (module Conn)
       value
+
+  let load (module Conn : CONNECTION) id =
+    Conn.find
+      (Caqti_request.find Caqti_type.int typ
+         (Mina_caqti.select_cols_from_id ~table_name ~cols:Fields.names))
+      id
 end
 
 module Snapp_global_slot_bounds = struct
@@ -905,11 +712,10 @@ module Snapp_global_slot_bounds = struct
   [@@deriving fields, hlist]
 
   let typ =
-    let open Caqti_type_spec in
-    let spec = Caqti_type.[ int64; int64 ] in
-    let encode t = Ok (hlist_to_tuple spec (to_hlist t)) in
-    let decode t = Ok (of_hlist (tuple_to_hlist spec t)) in
-    Caqti_type.custom ~encode ~decode (to_rep spec)
+    Mina_caqti.Type_spec.custom_type ~to_hlist ~of_hlist
+      Caqti_type.[ int64; int64 ]
+
+  let table_name = "snapp_global_slot_bounds"
 
   let add_if_doesn't_exist (module Conn : CONNECTION)
       (global_slot_bounds :
@@ -924,10 +730,16 @@ module Snapp_global_slot_bounds = struct
       |> Unsigned.UInt32.to_int64
     in
     let value = { global_slot_lower_bound; global_slot_upper_bound } in
-    select_insert_into_cols ~select:("id", Caqti_type.int)
-      ~table_name:"snapp_global_slot_bounds" ~cols:(Fields.names, typ)
+    Mina_caqti.select_insert_into_cols ~select:("id", Caqti_type.int)
+      ~table_name ~cols:(Fields.names, typ)
       (module Conn)
       value
+
+  let load (module Conn : CONNECTION) id =
+    Conn.find
+      (Caqti_request.find Caqti_type.int typ
+         (Mina_caqti.select_cols_from_id ~table_name ~cols:Fields.names))
+      id
 end
 
 module Timing_info = struct
@@ -944,13 +756,8 @@ module Timing_info = struct
   [@@deriving hlist]
 
   let typ =
-    let open Caqti_type_spec in
-    let spec =
+    Mina_caqti.Type_spec.custom_type ~to_hlist ~of_hlist
       Caqti_type.[ int; int64; int64; int64; int64; int64; int64; int64 ]
-    in
-    let encode t = Ok (hlist_to_tuple spec (to_hlist t)) in
-    let decode t = Ok (of_hlist (tuple_to_hlist spec t)) in
-    Caqti_type.custom ~encode ~decode (to_rep spec)
 
   let find (module Conn : CONNECTION) (acc : Account.t) =
     let open Deferred.Result.Let_syntax in
@@ -1063,6 +870,12 @@ module Snarked_ledger_hash = struct
           (Caqti_request.find Caqti_type.string Caqti_type.int
              "INSERT INTO snarked_ledger_hashes (value) VALUES (?) RETURNING id")
           hash
+
+  let load (module Conn : CONNECTION) id =
+    Conn.find
+      (Caqti_request.find Caqti_type.int Caqti_type.string
+         "SELECT value FROM snarked_ledger_hashes WHERE id = ?")
+      id
 end
 
 module Snapp_epoch_ledger = struct
@@ -1070,30 +883,35 @@ module Snapp_epoch_ledger = struct
   [@@deriving fields, hlist]
 
   let typ =
-    let open Caqti_type_spec in
-    let spec = Caqti_type.[ option int; option int ] in
-    let encode t = Ok (hlist_to_tuple spec (to_hlist t)) in
-    let decode t = Ok (of_hlist (tuple_to_hlist spec t)) in
-    Caqti_type.custom ~encode ~decode (to_rep spec)
+    Mina_caqti.Type_spec.custom_type ~to_hlist ~of_hlist
+      Caqti_type.[ option int; option int ]
+
+  let table_name = "snapp_epoch_ledger"
 
   let add_if_doesn't_exist (module Conn : CONNECTION)
       (epoch_ledger : _ Epoch_ledger.Poly.t) =
     let open Deferred.Result.Let_syntax in
     let%bind hash_id =
-      add_if_check
+      Mina_caqti.add_if_snapp_check
         (Snarked_ledger_hash.add_if_doesn't_exist (module Conn))
         epoch_ledger.hash
     in
     let%bind total_currency_id =
-      add_if_check
+      Mina_caqti.add_if_snapp_check
         (Snapp_amount_bounds.add_if_doesn't_exist (module Conn))
         epoch_ledger.total_currency
     in
     let value = { hash_id; total_currency_id } in
-    select_insert_into_cols ~select:("id", Caqti_type.int)
-      ~table_name:"snapp_epoch_ledger" ~cols:(Fields.names, typ)
+    Mina_caqti.select_insert_into_cols ~select:("id", Caqti_type.int)
+      ~table_name ~cols:(Fields.names, typ)
       (module Conn)
       value
+
+  let load (module Conn : CONNECTION) id =
+    Conn.find
+      (Caqti_request.find Caqti_type.int typ
+         (Mina_caqti.select_cols_from_id ~table_name ~cols:Fields.names))
+      id
 end
 
 module Snapp_epoch_data = struct
@@ -1107,14 +925,11 @@ module Snapp_epoch_data = struct
   [@@deriving fields, hlist]
 
   let typ =
-    let open Caqti_type_spec in
-    let spec =
+    Mina_caqti.Type_spec.custom_type ~to_hlist ~of_hlist
       Caqti_type.
         [ int; option string; option string; option string; option int ]
-    in
-    let encode t = Ok (hlist_to_tuple spec (to_hlist t)) in
-    let decode t = Ok (of_hlist (tuple_to_hlist spec t)) in
-    Caqti_type.custom ~encode ~decode (to_rep spec)
+
+  let table_name = "snapp_epoch_data"
 
   let add_if_doesn't_exist (module Conn : CONNECTION)
       (epoch_data : Mina_base.Snapp_predicate.Protocol_state.Epoch_data.t) =
@@ -1123,7 +938,7 @@ module Snapp_epoch_data = struct
       Snapp_epoch_ledger.add_if_doesn't_exist (module Conn) epoch_data.ledger
     in
     let%bind epoch_length_id =
-      add_if_check
+      Mina_caqti.add_if_snapp_check
         (Snapp_length_bounds.add_if_doesn't_exist (module Conn))
         epoch_data.epoch_length
     in
@@ -1147,10 +962,227 @@ module Snapp_epoch_data = struct
       ; epoch_length_id
       }
     in
-    select_insert_into_cols ~select:("id", Caqti_type.int)
-      ~table_name:"snapp_epoch_data" ~cols:(Fields.names, typ)
+    Mina_caqti.select_insert_into_cols ~select:("id", Caqti_type.int)
+      ~table_name ~cols:(Fields.names, typ)
       (module Conn)
       value
+
+  let load (module Conn : CONNECTION) id =
+    Conn.find
+      (Caqti_request.find Caqti_type.int typ
+         (Mina_caqti.select_cols_from_id ~table_name ~cols:Fields.names))
+      id
+end
+
+module Snapp_predicate_protocol_states = struct
+  type t =
+    { snarked_ledger_hash_id : int option
+    ; snarked_next_available_token_id : int option
+    ; timestamp_id : int option
+    ; blockchain_length_id : int option
+    ; min_window_density_id : int option
+    ; total_currency_id : int option
+    ; curr_global_slot_since_hard_fork : int option
+    ; global_slot_since_genesis : int option
+    ; staking_epoch_data_id : int
+    ; next_epoch_data_id : int
+    }
+  [@@deriving fields, hlist]
+
+  let typ =
+    Mina_caqti.Type_spec.custom_type ~to_hlist ~of_hlist
+      Caqti_type.
+        [ option int
+        ; option int
+        ; option int
+        ; option int
+        ; option int
+        ; option int
+        ; option int
+        ; option int
+        ; int
+        ; int
+        ]
+
+  let table_name = "snapp_predicate_protocol_states"
+
+  let add_if_doesn't_exist (module Conn : CONNECTION)
+      (ps : Mina_base.Snapp_predicate.Protocol_state.t) =
+    let open Deferred.Result.Let_syntax in
+    let%bind snarked_ledger_hash_id =
+      Mina_caqti.add_if_snapp_check
+        (Snarked_ledger_hash.add_if_doesn't_exist (module Conn))
+        ps.snarked_ledger_hash
+    in
+    let%bind snarked_next_available_token_id =
+      Mina_caqti.add_if_snapp_check
+        (Snapp_token_id_bounds.add_if_doesn't_exist (module Conn))
+        ps.snarked_next_available_token
+    in
+    let%bind timestamp_id =
+      Mina_caqti.add_if_snapp_check
+        (Snapp_timestamp_bounds.add_if_doesn't_exist (module Conn))
+        ps.timestamp
+    in
+    let%bind blockchain_length_id =
+      Mina_caqti.add_if_snapp_check
+        (Snapp_length_bounds.add_if_doesn't_exist (module Conn))
+        ps.blockchain_length
+    in
+    let%bind min_window_density_id =
+      Mina_caqti.add_if_snapp_check
+        (Snapp_length_bounds.add_if_doesn't_exist (module Conn))
+        ps.min_window_density
+    in
+    let%bind total_currency_id =
+      Mina_caqti.add_if_snapp_check
+        (Snapp_amount_bounds.add_if_doesn't_exist (module Conn))
+        ps.total_currency
+    in
+    let%bind curr_global_slot_since_hard_fork =
+      Mina_caqti.add_if_snapp_check
+        (Snapp_global_slot_bounds.add_if_doesn't_exist (module Conn))
+        ps.global_slot_since_hard_fork
+    in
+    let%bind global_slot_since_genesis =
+      Mina_caqti.add_if_snapp_check
+        (Snapp_global_slot_bounds.add_if_doesn't_exist (module Conn))
+        ps.global_slot_since_genesis
+    in
+    let%bind staking_epoch_data_id =
+      Snapp_epoch_data.add_if_doesn't_exist (module Conn) ps.staking_epoch_data
+    in
+    let%bind next_epoch_data_id =
+      Snapp_epoch_data.add_if_doesn't_exist (module Conn) ps.next_epoch_data
+    in
+    let value =
+      { snarked_ledger_hash_id
+      ; snarked_next_available_token_id
+      ; timestamp_id
+      ; blockchain_length_id
+      ; min_window_density_id
+      ; total_currency_id
+      ; curr_global_slot_since_hard_fork
+      ; global_slot_since_genesis
+      ; staking_epoch_data_id
+      ; next_epoch_data_id
+      }
+    in
+    Mina_caqti.select_insert_into_cols ~select:("id", Caqti_type.int)
+      ~table_name ~cols:(Fields.names, typ)
+      (module Conn)
+      value
+
+  let load (module Conn : CONNECTION) id =
+    Conn.find
+      (Caqti_request.find Caqti_type.int typ
+         (Mina_caqti.select_cols_from_id ~table_name ~cols:Fields.names))
+      id
+end
+
+module Snapp_party_body = struct
+  type t =
+    { public_key_id : int
+    ; update_id : int
+    ; token_id : int64
+    ; balance_change : int64
+    ; increment_nonce : bool
+    ; events_ids : int array
+    ; sequence_events_ids : int array
+    ; call_data_id : int
+    ; call_depth : int
+    ; snapp_predicate_protocol_state_id : int
+    ; use_full_commitment : bool
+    }
+  [@@deriving fields, hlist]
+
+  let typ =
+    Mina_caqti.Type_spec.custom_type ~to_hlist ~of_hlist
+      Caqti_type.
+        [ int
+        ; int
+        ; int64
+        ; int64
+        ; bool
+        ; Mina_caqti.array_int_typ
+        ; Mina_caqti.array_int_typ
+        ; int
+        ; int
+        ; int
+        ; bool
+        ]
+
+  let table_name = "snapp_party_body"
+
+  let add_if_doesn't_exist (module Conn : CONNECTION) (body : Party.Body.t) =
+    let open Deferred.Result.Let_syntax in
+    let%bind public_key_id =
+      Public_key.add_if_doesn't_exist (module Conn) body.pk
+    in
+    let%bind update_id =
+      Snapp_updates.add_if_doesn't_exist (module Conn) body.update
+    in
+    let increment_nonce = body.increment_nonce in
+    let%bind events_ids =
+      Mina_caqti.deferred_result_list_map body.events
+        ~f:(Snapp_state_data_array.add_if_doesn't_exist (module Conn))
+      >>| Array.of_list
+    in
+    let%bind sequence_events_ids =
+      Mina_caqti.deferred_result_list_map body.sequence_events
+        ~f:(Snapp_state_data_array.add_if_doesn't_exist (module Conn))
+      >>| Array.of_list
+    in
+    let%bind call_data_id =
+      Snapp_state_data.add_if_doesn't_exist (module Conn) body.call_data
+    in
+    let%bind snapp_predicate_protocol_state_id =
+      Snapp_predicate_protocol_states.add_if_doesn't_exist
+        (module Conn)
+        body.protocol_state
+    in
+    let token_id =
+      Unsigned.UInt64.to_int64 @@ Token_id.to_uint64 body.token_id
+    in
+    let balance_change =
+      let magnitude =
+        Currency.Amount.to_uint64 body.balance_change.magnitude
+        |> Unsigned.UInt64.to_int64
+      in
+      match body.balance_change.sgn with
+      | Sgn.Pos ->
+          magnitude
+      | Sgn.Neg ->
+          Int64.neg magnitude
+    in
+    let call_depth = body.call_depth in
+    let use_full_commitment = body.use_full_commitment in
+    let value =
+      { public_key_id
+      ; update_id
+      ; token_id
+      ; balance_change
+      ; increment_nonce
+      ; events_ids
+      ; sequence_events_ids
+      ; call_data_id
+      ; call_depth
+      ; snapp_predicate_protocol_state_id
+      ; use_full_commitment
+      }
+    in
+    Mina_caqti.select_insert_into_cols ~select:("id", Caqti_type.int)
+      ~table_name ~cols:(Fields.names, typ)
+      ~tannot:(function
+        | "events_ids" | "sequence_events_ids" -> Some "int[]" | _ -> None)
+      (module Conn)
+      value
+
+  let load (module Conn : CONNECTION) id =
+    Conn.find
+      (Caqti_request.find Caqti_type.int typ
+         (Mina_caqti.select_cols_from_id ~table_name ~cols:Fields.names))
+      id
 end
 
 module Snapp_party = struct
@@ -1180,11 +1212,10 @@ module Snapp_party = struct
     Caqti_type.enum "snapp_authorization_kind_type" ~encode ~decode
 
   let typ =
-    let open Caqti_type_spec in
-    let spec = Caqti_type.[ int; int; authorization_kind_typ ] in
-    let encode t = Ok (hlist_to_tuple spec (to_hlist t)) in
-    let decode t = Ok (of_hlist (tuple_to_hlist spec t)) in
-    Caqti_type.custom ~encode ~decode (to_rep spec)
+    Mina_caqti.Type_spec.custom_type ~to_hlist ~of_hlist
+      Caqti_type.[ int; int; authorization_kind_typ ]
+
+  let table_name = "snapp_party"
 
   let add_if_doesn't_exist (module Conn : CONNECTION) (party : Party.t) =
     let open Deferred.Result.Let_syntax in
@@ -1196,21 +1227,26 @@ module Snapp_party = struct
     in
     let authorization_kind = Control.tag party.authorization in
     let value = { body_id; predicate_id; authorization_kind } in
-    select_insert_into_cols ~select:("id", Caqti_type.int)
-      ~table_name:"snapp_party" ~cols:(Fields.names, typ)
+    Mina_caqti.select_insert_into_cols ~select:("id", Caqti_type.int)
+      ~table_name ~cols:(Fields.names, typ)
       (module Conn)
       value
+
+  let load (module Conn : CONNECTION) id =
+    Conn.find
+      (Caqti_request.find Caqti_type.int typ
+         (Mina_caqti.select_cols_from_id ~table_name ~cols:Fields.names))
+      id
 end
 
 module Snapp_fee_payers = struct
   type t = { body_id : int; nonce : int64 } [@@deriving fields, hlist]
 
   let typ =
-    let open Caqti_type_spec in
-    let spec = Caqti_type.[ int; int64 ] in
-    let encode t = Ok (hlist_to_tuple spec (to_hlist t)) in
-    let decode t = Ok (of_hlist (tuple_to_hlist spec t)) in
-    Caqti_type.custom ~encode ~decode (to_rep spec)
+    Mina_caqti.Type_spec.custom_type ~to_hlist ~of_hlist
+      Caqti_type.[ int; int64 ]
+
+  let table_name = "snapp_fee_payers"
 
   let add_if_doesn't_exist (module Conn : CONNECTION)
       (fp : Party.Predicated.Fee_payer.t) =
@@ -1222,158 +1258,91 @@ module Snapp_fee_payers = struct
     in
     let nonce = fp.predicate |> Unsigned.UInt32.to_int64 in
     let value = { body_id; nonce } in
-    select_insert_into_cols ~select:("id", Caqti_type.int)
-      ~table_name:"snapp_fee_payers" ~cols:(Fields.names, typ)
+    Mina_caqti.select_insert_into_cols ~select:("id", Caqti_type.int)
+      ~table_name ~cols:(Fields.names, typ)
       (module Conn)
       value
-end
 
-module Snapp_predicate_protocol_states = struct
-  type t =
-    { snarked_ledger_hash_id : int option
-    ; snarked_next_available_token_id : int option
-    ; timestamp_id : int option
-    ; blockchain_length_id : int option
-    ; min_window_density_id : int option
-    ; total_currency_id : int option
-    ; curr_global_slot_since_hard_fork : int option
-    ; global_slot_since_genesis : int option
-    ; staking_epoch_data_id : int
-    ; next_epoch_data : int
-    }
-  [@@deriving fields, hlist]
-
-  let typ =
-    let open Caqti_type_spec in
-    let spec =
-      Caqti_type.
-        [ option int
-        ; option int
-        ; option int
-        ; option int
-        ; option int
-        ; option int
-        ; option int
-        ; option int
-        ; int
-        ; int
-        ]
-    in
-    let encode t = Ok (hlist_to_tuple spec (to_hlist t)) in
-    let decode t = Ok (of_hlist (tuple_to_hlist spec t)) in
-    Caqti_type.custom ~encode ~decode (to_rep spec)
-
-  let add_if_doesn't_exist (module Conn : CONNECTION)
-      (ps : Mina_base.Snapp_predicate.Protocol_state.t) =
-    let open Deferred.Result.Let_syntax in
-    let%bind snarked_ledger_hash_id =
-      add_if_check
-        (Snarked_ledger_hash.add_if_doesn't_exist (module Conn))
-        ps.snarked_ledger_hash
-    in
-    let%bind snarked_next_available_token_id =
-      add_if_check
-        (Snapp_token_id_bounds.add_if_doesn't_exist (module Conn))
-        ps.snarked_next_available_token
-    in
-    let%bind timestamp_id =
-      add_if_check
-        (Snapp_timestamp_bounds.add_if_doesn't_exist (module Conn))
-        ps.timestamp
-    in
-    let%bind blockchain_length_id =
-      add_if_check
-        (Snapp_length_bounds.add_if_doesn't_exist (module Conn))
-        ps.blockchain_length
-    in
-    let%bind min_window_density_id =
-      add_if_check
-        (Snapp_length_bounds.add_if_doesn't_exist (module Conn))
-        ps.min_window_density
-    in
-    let%bind total_currency_id =
-      add_if_check
-        (Snapp_amount_bounds.add_if_doesn't_exist (module Conn))
-        ps.total_currency
-    in
-    let%bind curr_global_slot_since_hard_fork =
-      add_if_check
-        (Snapp_global_slot_bounds.add_if_doesn't_exist (module Conn))
-        ps.global_slot_since_hard_fork
-    in
-    let%bind global_slot_since_genesis =
-      add_if_check
-        (Snapp_global_slot_bounds.add_if_doesn't_exist (module Conn))
-        ps.global_slot_since_genesis
-    in
-    let%bind staking_epoch_data_id =
-      Snapp_epoch_data.add_if_doesn't_exist (module Conn) ps.staking_epoch_data
-    in
-    let%bind next_epoch_data =
-      Snapp_epoch_data.add_if_doesn't_exist (module Conn) ps.next_epoch_data
-    in
-    let value =
-      { snarked_ledger_hash_id
-      ; snarked_next_available_token_id
-      ; timestamp_id
-      ; blockchain_length_id
-      ; min_window_density_id
-      ; total_currency_id
-      ; curr_global_slot_since_hard_fork
-      ; global_slot_since_genesis
-      ; staking_epoch_data_id
-      ; next_epoch_data
-      }
-    in
-    select_insert_into_cols ~select:("id", Caqti_type.int)
-      ~table_name:"snapp_predicate_protocol_states" ~cols:(Fields.names, typ)
-      (module Conn)
-      value
+  let load (module Conn : CONNECTION) id =
+    Conn.find
+      (Caqti_request.find Caqti_type.int typ
+         (Mina_caqti.select_cols_from_id ~table_name ~cols:Fields.names))
+      id
 end
 
 module Epoch_data = struct
-  type t = { seed : string; ledger_hash_id : int }
+  type t =
+    { seed : string
+    ; ledger_hash_id : int
+    ; total_currency : int64
+    ; start_checkpoint : string
+    ; lock_checkpoint : string
+    ; epoch_length : int64
+    }
+  [@@deriving hlist, fields]
 
   let typ =
-    let encode t = Ok (t.seed, t.ledger_hash_id) in
-    let decode (seed, ledger_hash_id) = Ok { seed; ledger_hash_id } in
-    let rep = Caqti_type.(tup2 string int) in
-    Caqti_type.custom ~encode ~decode rep
-
-  (* for extensional blocks, we have just the seed and ledger hash *)
-  let add_from_seed_and_ledger_hash_id (module Conn : CONNECTION) ~seed
-      ~ledger_hash_id =
-    let open Deferred.Result.Let_syntax in
-    let seed = Epoch_seed.to_base58_check seed in
-    match%bind
-      Conn.find_opt
-        (Caqti_request.find_opt typ Caqti_type.int
-           "SELECT id FROM epoch_data WHERE seed = ? AND ledger_hash_id = ?")
-        { seed; ledger_hash_id }
-    with
-    | Some id ->
-        return id
-    | None ->
-        Conn.find
-          (Caqti_request.find typ Caqti_type.int
-             {sql| INSERT INTO epoch_data (seed, ledger_hash_id) VALUES (?, ?)
-                   RETURNING id
-             |sql})
-          { seed; ledger_hash_id }
+    Mina_caqti.Type_spec.custom_type ~to_hlist ~of_hlist
+      Caqti_type.[ string; int; int64; string; string; int64 ]
 
   let add_if_doesn't_exist (module Conn : CONNECTION)
       (t : Mina_base.Epoch_data.Value.t) =
     let open Deferred.Result.Let_syntax in
-    let Mina_base.Epoch_ledger.Poly.{ hash; _ } =
+    let Mina_base.Epoch_ledger.Poly.{ hash; total_currency } =
       Mina_base.Epoch_data.Poly.ledger t
     in
     let%bind ledger_hash_id =
       Snarked_ledger_hash.add_if_doesn't_exist (module Conn) hash
     in
-    add_from_seed_and_ledger_hash_id
-      (module Conn)
-      ~seed:(Mina_base.Epoch_data.Poly.seed t)
-      ~ledger_hash_id
+    let seed = t.seed |> Epoch_seed.to_base58_check in
+    let total_currency =
+      total_currency |> Currency.Amount.to_uint64 |> Unsigned.UInt64.to_int64
+    in
+    let start_checkpoint = t.start_checkpoint |> State_hash.to_base58_check in
+    let lock_checkpoint = t.lock_checkpoint |> State_hash.to_base58_check in
+    let epoch_length =
+      t.epoch_length |> Mina_numbers.Length.to_uint32
+      |> Unsigned.UInt32.to_int64
+    in
+    match%bind
+      Conn.find_opt
+        (Caqti_request.find_opt typ Caqti_type.int
+           {sql| SELECT id FROM epoch_data
+                 WHERE seed = $1
+                 AND ledger_hash_id = $2
+                 AND total_currency = $3
+                 AND start_checkpoint = $4
+                 AND lock_checkpoint = $5
+                 AND epoch_length = $6
+           |sql})
+        { seed
+        ; ledger_hash_id
+        ; total_currency
+        ; start_checkpoint
+        ; lock_checkpoint
+        ; epoch_length
+        }
+    with
+    | Some id ->
+        return id
+    | None ->
+        Mina_caqti.select_insert_into_cols ~select:("id", Caqti_type.int)
+          ~table_name:"epoch_data" ~cols:(Fields.names, typ)
+          (module Conn)
+          { seed
+          ; ledger_hash_id
+          ; total_currency
+          ; start_checkpoint
+          ; lock_checkpoint
+          ; epoch_length
+          }
+
+  let load (module Conn : CONNECTION) id =
+    Conn.find
+      (Caqti_request.find Caqti_type.int typ
+         (Mina_caqti.select_cols_from_id ~table_name:"epoch_data"
+            ~cols:Fields.names))
+      id
 end
 
 module User_command = struct
@@ -1395,8 +1364,7 @@ module User_command = struct
     [@@deriving hlist]
 
     let typ =
-      let open Caqti_type_spec in
-      let spec =
+      Mina_caqti.Type_spec.custom_type ~to_hlist ~of_hlist
         Caqti_type.
           [ string
           ; int
@@ -1411,10 +1379,6 @@ module User_command = struct
           ; string
           ; string
           ]
-      in
-      let encode t = Ok (hlist_to_tuple spec (to_hlist t)) in
-      let decode t = Ok (of_hlist (tuple_to_hlist spec t)) in
-      Caqti_type.custom ~encode ~decode (to_rep spec)
 
     let find (module Conn : CONNECTION) ~(transaction_hash : Transaction_hash.t)
         =
@@ -1519,23 +1483,20 @@ module User_command = struct
     type t =
       { snapp_fee_payer_id : int
       ; snapp_other_parties_ids : int array
-      ; snapp_predicate_protocol_state_id : int
       ; hash : string
       }
     [@@deriving fields, hlist]
 
     let typ =
-      let open Caqti_type_spec in
-      let spec = Caqti_type.[ int; array_int_typ; int; string ] in
-      let encode t = Ok (hlist_to_tuple spec (to_hlist t)) in
-      let decode t = Ok (of_hlist (tuple_to_hlist spec t)) in
-      Caqti_type.custom ~encode ~decode (to_rep spec)
+      Mina_caqti.Type_spec.custom_type ~to_hlist ~of_hlist
+        Caqti_type.[ int; Mina_caqti.array_int_typ; string ]
 
     let find_opt (module Conn : CONNECTION)
         ~(transaction_hash : Transaction_hash.t) =
       Conn.find_opt
         ( Caqti_request.find_opt Caqti_type.string Caqti_type.int
-        @@ select_cols ~select:"id" ~table_name:"snapp_commands" [ "hash" ] )
+        @@ Mina_caqti.select_cols ~select:"id" ~table_name:"snapp_commands"
+             [ "hash" ] )
         (Transaction_hash.to_base58_check transaction_hash)
 
     let add_if_doesn't_exist (module Conn : CONNECTION) (ps : Parties.t) =
@@ -1544,27 +1505,16 @@ module User_command = struct
         Snapp_fee_payers.add_if_doesn't_exist (module Conn) ps.fee_payer.data
       in
       let%bind snapp_other_parties_ids =
-        deferred_result_list_map ps.other_parties
+        Mina_caqti.deferred_result_list_map ps.other_parties
           ~f:(Snapp_party.add_if_doesn't_exist (module Conn))
         >>| Array.of_list
-      in
-      let%bind snapp_predicate_protocol_state_id =
-        Snapp_predicate_protocol_states.add_if_doesn't_exist
-          (module Conn)
-          ps.protocol_state
       in
       let hash =
         Transaction_hash.hash_command (Parties ps)
         |> Transaction_hash.to_base58_check
       in
-      let value =
-        { snapp_fee_payer_id
-        ; snapp_other_parties_ids
-        ; snapp_predicate_protocol_state_id
-        ; hash
-        }
-      in
-      select_insert_into_cols ~select:("id", Caqti_type.int)
+      let value = { snapp_fee_payer_id; snapp_other_parties_ids; hash } in
+      Mina_caqti.select_insert_into_cols ~select:("id", Caqti_type.int)
         ~table_name:"snapp_commands" ~cols:(Fields.names, typ)
         ~tannot:(function
           | "snapp_other_parties_ids" -> Some "int[]" | _ -> None)
@@ -1856,11 +1806,8 @@ module Balance = struct
   type t = { id : int; public_key_id : int; balance : int64 } [@@deriving hlist]
 
   let typ =
-    let open Caqti_type_spec in
-    let spec = Caqti_type.[ int; int; int64 ] in
-    let encode t = Ok (hlist_to_tuple spec (to_hlist t)) in
-    let decode t = Ok (of_hlist (tuple_to_hlist spec t)) in
-    Caqti_type.custom ~encode ~decode (to_rep spec)
+    Mina_caqti.Type_spec.custom_type ~to_hlist ~of_hlist
+      Caqti_type.[ int; int; int64 ]
 
   let balance_to_int64 (balance : Currency.Balance.t) : int64 =
     balance |> Currency.Balance.to_amount |> Currency.Amount.to_uint64
@@ -1918,11 +1865,8 @@ module Block_and_internal_command = struct
   [@@deriving hlist]
 
   let typ =
-    let open Caqti_type_spec in
-    let spec = Caqti_type.[ int; int; int; int; option int64; int ] in
-    let encode t = Ok (hlist_to_tuple spec (to_hlist t)) in
-    let decode t = Ok (of_hlist (tuple_to_hlist spec t)) in
-    Caqti_type.custom ~encode ~decode (to_rep spec)
+    Mina_caqti.Type_spec.custom_type ~to_hlist ~of_hlist
+      Caqti_type.[ int; int; int; int; option int64; int ]
 
   let add (module Conn : CONNECTION) ~block_id ~internal_command_id ~sequence_no
       ~secondary_sequence_no ~receiver_account_creation_fee_paid
@@ -1991,8 +1935,7 @@ module Block_and_signed_command = struct
   [@@deriving hlist]
 
   let typ =
-    let open Caqti_type_spec in
-    let spec =
+    Mina_caqti.Type_spec.custom_type ~to_hlist ~of_hlist
       Caqti_type.
         [ int
         ; int
@@ -2006,10 +1949,6 @@ module Block_and_signed_command = struct
         ; option int
         ; option int
         ]
-    in
-    let encode t = Ok (hlist_to_tuple spec (to_hlist t)) in
-    let decode t = Ok (of_hlist (tuple_to_hlist spec t)) in
-    Caqti_type.custom ~encode ~decode (to_rep spec)
 
   let add (module Conn : CONNECTION) ~block_id ~user_command_id ~sequence_no
       ~status ~failure_reason ~fee_payer_account_creation_fee_paid
@@ -2181,17 +2120,19 @@ module Block = struct
     ; snarked_ledger_hash_id : int
     ; staking_epoch_data_id : int
     ; next_epoch_data_id : int
+    ; min_window_density : int64
+    ; total_currency : int64
+    ; next_available_token : int64
     ; ledger_hash : string
     ; height : int64
     ; global_slot_since_hard_fork : int64
     ; global_slot_since_genesis : int64
     ; timestamp : int64
     }
-  [@@deriving hlist]
+  [@@deriving hlist, fields]
 
   let typ =
-    let open Caqti_type_spec in
-    let spec =
+    Mina_caqti.Type_spec.custom_type ~to_hlist ~of_hlist
       Caqti_type.
         [ string
         ; option int
@@ -2201,16 +2142,15 @@ module Block = struct
         ; int
         ; int
         ; int
+        ; int64
+        ; int64
+        ; int64
         ; string
         ; int64
         ; int64
         ; int64
         ; int64
         ]
-    in
-    let encode t = Ok (hlist_to_tuple spec (to_hlist t)) in
-    let decode t = Ok (of_hlist (tuple_to_hlist spec t)) in
-    Caqti_type.custom ~encode ~decode (to_rep spec)
 
   let find (module Conn : CONNECTION) ~(state_hash : State_hash.t) =
     Conn.find
@@ -2224,15 +2164,11 @@ module Block = struct
          "SELECT id FROM blocks WHERE state_hash = ?")
       (State_hash.to_base58_check state_hash)
 
-  let load (module Conn : CONNECTION) ~(id : int) =
+  let load (module Conn : CONNECTION) ~id =
     Conn.find
       (Caqti_request.find Caqti_type.int typ
-         {sql| SELECT state_hash, parent_id, parent_hash, creator_id,
-                      block_winner_id, snarked_ledger_hash_id, staking_epoch_data_id,
-                      next_epoch_data_id, ledger_hash, height, global_slot,
-                      global_slot_since_genesis, timestamp FROM blocks
-               WHERE id = ?
-         |sql})
+         (Mina_caqti.select_cols_from_id ~table_name:"blocks"
+            ~cols:Fields.names))
       id
 
   let add_parts_if_doesn't_exist (module Conn : CONNECTION)
@@ -2279,10 +2215,11 @@ module Block = struct
             (Caqti_request.find typ Caqti_type.int
                {sql| INSERT INTO blocks (state_hash, parent_id, parent_hash,
                       creator_id, block_winner_id,
-                      snarked_ledger_hash_id, staking_epoch_data_id,
-                      next_epoch_data_id, ledger_hash, height, global_slot,
+                      snarked_ledger_hash_id, staking_epoch_data_id, next_epoch_data_id,
+                      min_window_density, total_currency, next_available_token,
+                      ledger_hash, height, global_slot_since_hard_fork,
                       global_slot_since_genesis, timestamp)
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id
                |sql})
             { state_hash = hash |> State_hash.to_base58_check
             ; parent_id
@@ -2294,6 +2231,18 @@ module Block = struct
             ; snarked_ledger_hash_id
             ; staking_epoch_data_id
             ; next_epoch_data_id
+            ; min_window_density =
+                Protocol_state.consensus_state protocol_state
+                |> Consensus.Data.Consensus_state.min_window_density
+                |> Mina_numbers.Length.to_uint32 |> Unsigned.UInt32.to_int64
+            ; total_currency =
+                Protocol_state.consensus_state protocol_state
+                |> Consensus.Data.Consensus_state.total_currency
+                |> Currency.Amount.to_uint64 |> Unsigned.UInt64.to_int64
+            ; next_available_token =
+                Protocol_state.blockchain_state protocol_state
+                |> Blockchain_state.registers |> Registers.next_available_token
+                |> Token_id.to_uint64 |> Unsigned.UInt64.to_int64
             ; ledger_hash =
                 Protocol_state.blockchain_state protocol_state
                 |> Blockchain_state.staged_ledger_hash
@@ -2364,8 +2313,8 @@ module Block = struct
           else None
         in
         let%bind (_ : int) =
-          deferred_result_list_fold transactions ~init:0 ~f:(fun sequence_no ->
-            function
+          Mina_caqti.deferred_result_list_fold transactions ~init:0
+            ~f:(fun sequence_no -> function
             | { Mina_base.With_status.status
               ; data = Mina_base.Transaction.Command command
               } ->
@@ -2410,7 +2359,7 @@ module Block = struct
                      next element of fee_transfers
                 *)
                 let%bind fee_transfer_infos =
-                  deferred_result_list_fold fee_transfers ~init:[]
+                  Mina_caqti.deferred_result_list_fold fee_transfers ~init:[]
                     ~f:(fun acc (secondary_sequence_no, fee_transfer) ->
                       let%map id =
                         Fee_transfer.add_if_doesn't_exist
@@ -2438,8 +2387,8 @@ module Block = struct
                          transfer transaction"
                 in
                 let%map () =
-                  deferred_result_list_fold fee_transfer_infos_with_balances
-                    ~init:()
+                  Mina_caqti.deferred_result_list_fold
+                    fee_transfer_infos_with_balances ~init:()
                     ~f:(fun
                          ()
                          ( ( fee_transfer_id
@@ -2580,26 +2529,13 @@ module Block = struct
               (module Conn)
               block.snarked_ledger_hash
           in
-          let%bind staking_ledger_hash_id =
-            Snarked_ledger_hash.add_if_doesn't_exist
-              (module Conn)
-              block.staking_epoch_ledger_hash
-          in
           let%bind staking_epoch_data_id =
-            Epoch_data.add_from_seed_and_ledger_hash_id
+            Epoch_data.add_if_doesn't_exist
               (module Conn)
-              ~seed:block.staking_epoch_seed
-              ~ledger_hash_id:staking_ledger_hash_id
-          in
-          let%bind next_ledger_hash_id =
-            Snarked_ledger_hash.add_if_doesn't_exist
-              (module Conn)
-              block.next_epoch_ledger_hash
+              block.staking_epoch_data
           in
           let%bind next_epoch_data_id =
-            Epoch_data.add_from_seed_and_ledger_hash_id
-              (module Conn)
-              ~seed:block.next_epoch_seed ~ledger_hash_id:next_ledger_hash_id
+            Epoch_data.add_if_doesn't_exist (module Conn) block.next_epoch_data
           in
           Conn.find
             (Caqti_request.find typ Caqti_type.int
@@ -2607,9 +2543,12 @@ module Block = struct
                      (state_hash, parent_id, parent_hash,
                       creator_id, block_winner_id,
                       snarked_ledger_hash_id, staking_epoch_data_id,
-                      next_epoch_data_id, ledger_hash, height, global_slot,
+                      next_epoch_data_id,
+                      min_window_density, total_currency, next_available_token,
+                      ledger_hash, height, global_slot_since_hard_fork,
                       global_slot_since_genesis, timestamp)
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     RETURNING id
                |sql})
             { state_hash = block.state_hash |> State_hash.to_base58_check
             ; parent_id
@@ -2619,6 +2558,15 @@ module Block = struct
             ; snarked_ledger_hash_id
             ; staking_epoch_data_id
             ; next_epoch_data_id
+            ; min_window_density =
+                block.min_window_density |> Mina_numbers.Length.to_uint32
+                |> Unsigned.UInt32.to_int64
+            ; total_currency =
+                block.total_currency |> Currency.Amount.to_uint64
+                |> Unsigned.UInt64.to_int64
+            ; next_available_token =
+                block.next_available_token |> Token_id.to_uint64
+                |> Unsigned.UInt64.to_int64
             ; ledger_hash = block.ledger_hash |> Ledger_hash.to_base58_check
             ; height = block.height |> Unsigned.UInt32.to_int64
             ; global_slot_since_hard_fork =
@@ -2631,7 +2579,7 @@ module Block = struct
     (* add user commands *)
     let%bind user_cmds_with_ids =
       let%map user_cmd_ids_rev =
-        deferred_result_list_fold block.user_cmds ~init:[]
+        Mina_caqti.deferred_result_list_fold block.user_cmds ~init:[]
           ~f:(fun acc user_cmd ->
             let%map cmd_id =
               User_command.add_extensional_if_doesn't_exist
@@ -2656,7 +2604,7 @@ module Block = struct
     in
     (* add user commands to join table *)
     let%bind () =
-      deferred_result_list_fold user_cmds_with_ids ~init:()
+      Mina_caqti.deferred_result_list_fold user_cmds_with_ids ~init:()
         ~f:(fun () (user_command, user_command_id) ->
           let%bind source_balance_id =
             balance_id_of_pk_and_balance_opt user_command.source
@@ -2685,7 +2633,7 @@ module Block = struct
     (* add internal commands *)
     let%bind internal_cmds_ids_and_seq_nos =
       let%map internal_cmds_and_ids_rev =
-        deferred_result_list_fold block.internal_cmds ~init:[]
+        Mina_caqti.deferred_result_list_fold block.internal_cmds ~init:[]
           ~f:(fun acc internal_cmd ->
             let%map cmd_id =
               Internal_command.add_extensional_if_doesn't_exist
@@ -2702,7 +2650,8 @@ module Block = struct
     in
     (* add internal commands to join table *)
     let%bind () =
-      deferred_result_list_fold internal_cmds_ids_and_seq_nos ~init:()
+      Mina_caqti.deferred_result_list_fold internal_cmds_ids_and_seq_nos
+        ~init:()
         ~f:(fun
              ()
              ( (internal_command, internal_command_id)
