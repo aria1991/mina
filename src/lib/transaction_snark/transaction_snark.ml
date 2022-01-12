@@ -4507,7 +4507,9 @@ module For_tests = struct
     let parties : Parties.t = { fee_payer; other_parties; memo } in
     (parties, vk)
 
-  let create_trivial_predicate_snapp ~constraint_constants spec ledger =
+  let create_trivial_predicate_snapp ~constraint_constants
+      ?(protocol_state_predicate = Snapp_predicate.Protocol_state.accept) spec
+      ledger =
     let { Transaction_logic.For_tests.Transaction_spec.fee
         ; sender = sender, sender_nonce
         ; receiver = trivial_account_pk
@@ -4568,7 +4570,7 @@ module For_tests = struct
               ; sequence_events = []
               ; call_data = Field.zero
               ; call_depth = 0
-              ; protocol_state = Snapp_predicate.Protocol_state.accept
+              ; protocol_state = protocol_state_predicate
               ; use_full_commitment = ()
               }
           ; predicate = sender_nonce
@@ -4588,7 +4590,7 @@ module For_tests = struct
           ; sequence_events = []
           ; call_data = Field.zero
           ; call_depth = 0
-          ; protocol_state = Snapp_predicate.Protocol_state.accept
+          ; protocol_state = protocol_state_predicate
           ; use_full_commitment = false
           }
       ; predicate = Nonce (Account.Nonce.succ sender_nonce)
@@ -4605,13 +4607,12 @@ module For_tests = struct
           ; sequence_events = []
           ; call_data = Field.zero
           ; call_depth = 0
-          ; protocol_state = Snapp_predicate.Protocol_state.accept
+          ; protocol_state = protocol_state_predicate
           ; use_full_commitment = false
           }
       ; predicate = Full Snapp_predicate.Account.accept
       }
     in
-    let protocol_state = Snapp_predicate.Protocol_state.accept in
     let memo = Signed_command_memo.empty in
     let ps =
       Parties.Party_or_stack.of_parties_list
@@ -4622,7 +4623,7 @@ module For_tests = struct
     let other_parties_hash = Parties.Party_or_stack.stack_hash ps in
     let protocol_state_predicate_hash =
       (*FIXME: is this ok? *)
-      Snapp_predicate.Protocol_state.digest protocol_state
+      Snapp_predicate.Protocol_state.digest protocol_state_predicate
     in
     let transaction : Parties.Transaction_commitment.t =
       (*FIXME: is this correct? *)
