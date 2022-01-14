@@ -3,6 +3,8 @@ open Core_kernel
 open Snark_params
 open Snark_bits
 
+val time_offsets : bool
+
 module Time : sig
   type t [@@deriving sexp, compare, yojson]
 

@@ -6,6 +6,16 @@ open Tick
 open Unsigned_extended
 open Snark_bits
 
+[%%if time_offsets]
+
+let time_offsets = true
+
+[%%else]
+
+let time_offsets = false
+
+[%%endif]
+
 module Time = struct
   (* Milliseconds since epoch *)
   [%%versioned
