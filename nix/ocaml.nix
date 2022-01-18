@@ -74,7 +74,7 @@ let
         name == (toString (../. + "/dune"))
         || pkgs.lib.hasPrefix (toString (../. + "/src")) name) ../.;
       # TODO, get this from somewhere
-      MARLIN_REPO_SHA = "<unknown>";
+      PROOF_SYSTEMS_REPO_SHA = "<unknown>";
 
       MINA_COMMIT_DATE = sourceInfo.lastModifiedDate or "<unknown>";
       MINA_COMMIT_SHA1 = sourceInfo.rev or "DIRTY";
@@ -89,7 +89,8 @@ let
       # todo: slimmed rocksdb
       MINA_ROCKSDB = "${pkgs.rocksdb}/lib/librocksdb.a";
       GO_CAPNP_STD = "${pkgs.go-capnproto2.src}/std";
-      MARLIN_PLONK_STUBS = "${pkgs.marlin_plonk_bindings_stubs}/lib";
+      KIMCHI_BINDINGS_STUBS = "${pkgs.kimchi_bindings}/lib";
+      KIMCHI_BINDINGS_GEN = "${pkgs.kimchi_bindings}/bin";
 
       configurePhase = ''
         export MINA_ROOT="$PWD"

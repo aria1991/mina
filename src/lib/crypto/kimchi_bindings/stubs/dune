@@ -1,0 +1,47 @@
+(data_only_dirs src)
+
+(dirs :standard \ target)
+
+;; Ignore target if it exists locally
+
+(rule
+ (targets libwires_15_stubs.a)
+ (deps
+  build.sh
+  Cargo.toml
+  rust-toolchain.toml
+  (source_tree src)
+  (source_tree ../../proof-systems))
+ (action
+  (progn
+   (run ./build.sh))))
+
+;; library
+
+(library
+ (public_name kimchi)
+ (name kimchi)
+ (foreign_archives wires_15_stubs)
+ (c_library_flags :standard "-lpthread")
+ (instrumentation
+  (backend bisect_ppx))
+ (inline_tests)
+ (preprocess
+  (pps ppx_version ppx_inline_test)))
+
+;; generate the OCaml bindings
+
+(rule
+ (target kimchi.ml)
+ (deps
+  gen.sh
+  Cargo.toml
+  rust-toolchain.toml
+  ../../../../.ocamlformat
+  (source_tree src)
+  (source_tree binding_generation)
+  (source_tree ../../proof-systems))
+ (action
+   (progn
+    (run ./gen.sh kimchi.ml)
+    (run ocamlformat --impl -i kimchi.ml))))

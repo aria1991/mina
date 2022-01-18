@@ -80,21 +80,19 @@ in {
 
   # Dependencies which aren't in nixpkgs and local packages which need networking to build
 
-  marlin_plonk_bindings_stubs = (if pkgs.stdenv.hostPlatform.isMusl then
+  kimchi_bindings = (if pkgs.stdenv.hostPlatform.isMusl then
     pkgs.rustPlatform-musl
   else
     pkgs.rustPlatform).buildRustPackage {
-      pname = "marlin_plonk_bindings_stubs";
+      pname = "kimchi_bindings";
       version = "0.1.0";
-      srcs = [ ../src/lib/marlin_plonk_bindings/stubs ../src/lib/marlin ];
+      srcs = [ ../src/lib/crypto ];
       nativeBuildInputs = [ pkgs.ocaml-ng.ocamlPackages_4_11.ocaml ];
-      sourceRoot = "stubs";
+      doCheck = false;
       postUnpack = ''
-        mkdir -p marlin_plonk_bindings
-        mv stubs marlin_plonk_bindings
-        export sourceRoot=marlin_plonk_bindings/stubs
+        export sourceRoot=crypto/kimchi_bindings/stubs
       '';
-      cargoLock.lockFile = ../src/lib/marlin_plonk_bindings/stubs/Cargo.lock;
+      cargoLock.lockFile = ../src/lib/crypto/kimchi_bindings/stubs/Cargo.lock;
     };
 
   go-capnproto2 = pkgs.buildGoModule rec {
