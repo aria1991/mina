@@ -6193,3 +6193,5 @@ node-fetch@^2.6.7:
   version "2.6.7"
 tar@^4.4.18:
   version "4.4.18"
+minimist@^1.2.6:
+  version "1.2.6"
