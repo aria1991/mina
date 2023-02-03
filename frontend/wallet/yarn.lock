@@ -2614,9 +2614,9 @@ html-encoding-sniffer@^1.0.2:
     whatwg-encoding "^1.0.1"
 
 http-cache-semantics@^4.0.0:
-  version "4.0.3"
-  resolved "https://registry.yarnpkg.com/http-cache-semantics/-/http-cache-semantics-4.0.3.tgz#495704773277eeef6e43f9ab2c2c7d259dda25c5"
-  integrity sha512-TcIMG3qeVLgDr1TEd2XvHaTnMPwYQUQMIBLy+5pLSDKYFc7UIqj39w8EGzZkaxoLv/l2K8HaI0t5AVA+YYgUew==
+  version "4.1.1"
+  resolved "https://registry.yarnpkg.com/http-cache-semantics/-/http-cache-semantics-4.1.1.tgz#abe02fcb2985460bf0323be664436ec3476a6d5a"
+  integrity sha512-er295DKPVsV82j5kw1Gjt+ADA/XYHsajl82cGNQG2eyoPkvgUhX+nDIyelzhIWbbsXP39EHcI6l5tYs2FYqYXQ==
 
 http-errors@1.6.2:
   version "1.6.2"
@@ -6185,13 +6185,3 @@ zen-observable@^0.8.0:
   version "0.8.14"
   resolved "https://registry.yarnpkg.com/zen-observable/-/zen-observable-0.8.14.tgz#d33058359d335bc0db1f0af66158b32872af3bf7"
   integrity sha512-kQz39uonEjEESwh+qCi83kcC3rZJGh4mrZW7xjkSQYXkq//JZHTtKo+6yuVloTgMtzsIWOJrjIrKvk/dqm0L5g==
-ejs@^3.1.7:
-  version "3.1.7"
-moment@^2.29.4:
-  version "2.29.4"
-node-fetch@^2.6.7:
-  version "2.6.7"
-tar@^4.4.18:
-  version "4.4.18"
-minimist@^1.2.6:
-  version "1.2.6"
